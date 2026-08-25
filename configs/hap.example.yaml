@@ -1,0 +1,35 @@
+listen: ":8096"
+status:
+  listen: "127.0.0.1:9100"
+backends:
+  - name: server-a
+    url: http://127.0.0.1:8097
+  - name: server-b
+    url: http://127.0.0.1:8098
+affinity:
+  policy: force_reauth
+  graylist:
+    policy: fail_closed
+    # omit clients to default to Infuse; [] disables built-in names
+    # clients:
+    #   - Infuse
+    path_prefixes: []
+  new_clients_require: healthy
+  store: sqlite
+  sqlite:
+    path: ./data/affinity.db
+  postgres:
+    url: ""
+  token_ttl: 720h
+  device_ttl: 720h
+  anon_ttl: 15m
+health:
+  interval: 10s
+  public_info: true
+  jellyfin_health: true
+  passive_auth_failures:
+    enabled: true
+    threshold: 3
+    window: 60s
+  auth_probe:
+    enabled: false

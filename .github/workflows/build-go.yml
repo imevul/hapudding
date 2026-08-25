@@ -1,0 +1,53 @@
+name: Build & test
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: hap
+          POSTGRES_PASSWORD: hap
+          POSTGRES_DB: hap
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U hap"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      HAP_TEST_DATABASE_URL: postgres://hap:hap@localhost:5432/hap?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: gofmt
+        run: |
+          out="$(gofmt -l .)"
+          if [ -n "$out" ]; then
+            echo "gofmt needed on:"; echo "$out"
+            exit 1
+          fi
+      - name: go vet
+        run: go vet ./...
+      - name: Test (race)
+        run: go test ./... -race -count=1
+      - name: Build
+        run: |
+          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "0.0.0-dev")
+          go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o hapudding ./cmd/hapudding

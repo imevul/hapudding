@@ -1,0 +1,43 @@
+# SQLite: docker compose up --build
+# Postgres: HAP_STORE=postgres HAP_DATABASE_URL=postgres://hap:hap@postgres:5432/hap?sslmode=disable \
+#           docker compose --profile postgres up --build
+# Switching drivers does not migrate existing bindings.
+services:
+  hap:
+    build: .
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      HAP_LISTEN: ":8096"
+      HAP_STATUS_LISTEN: "0.0.0.0:9100"
+      HAP_STORE: ${HAP_STORE:-sqlite}
+      HAP_SQLITE_PATH: /data/affinity.db
+      HAP_DATABASE_URL: ${HAP_DATABASE_URL:-}
+    volumes:
+      - hap-data:/data
+      - ./configs/hap.example.yaml:/config/hap.yaml:ro
+    command: ["--config", "/config/hap.yaml"]
+    ports:
+      - "8096:8096"
+      - "9100:9100"
+    depends_on:
+      postgres:
+        condition: service_started
+        required: false
+
+  postgres:
+    profiles: [postgres]
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-hap}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hap}
+      POSTGRES_DB: ${POSTGRES_DB:-hap}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+volumes:
+  hap-data:
+  pg-data:

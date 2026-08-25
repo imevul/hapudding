@@ -1,0 +1,17 @@
+/bin/
+/dist/
+/data/
+*.db
+*.db-journal
+coverage.out
+.env
+.DS_Store
+
+# Go
+vendor/
+*.test
+*.out
+
+# Local overrides
+.cursor/
+local_docs/

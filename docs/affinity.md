@@ -1,0 +1,52 @@
+# Affinity
+
+## Lookup order
+
+1. **Token** (hashed) → backend. Always wins.
+2. Else **DeviceId** → backend.
+3. Else **anon glue**: hash(client IP + User-Agent), short TTL.
+4. Else pick among backends eligible for new clients (consistent-hash DeviceId when present; otherwise least-loaded). `hap_backend` cookie is a preference among eligible backends only.
+
+A token issued by Server A is never sent to Server B.
+
+## Policies
+
+Consulted when the bound backend is **unhealthy**. Happy path is identical for all policies.
+
+### `force_reauth` (default)
+
+Drop that client's token and DeviceId bindings. Do not forward the old token. New unauthenticated traffic may go to another eligible backend. The client must log in again and will see a different Server Id.
+
+### `fail_closed`
+
+Keep the binding. Return HAP 503. When A recovers, the same token works. New clients (no live binding) may still use other healthy backends.
+
+### `pin_unhealthy`
+
+Like `fail_closed` for bound clients. New clients that hashed or glued to A stay on A even if A is down.
+
+## Logout
+
+Logout drops the **token** row only. DeviceId and anon glue stay. Re-login on the same client stays on the same backend while A is healthy. See SPEC.
+
+## Auth flow
+
+HAP never logs in as the user. It chooses a backend and forwards. See the sequence in the project plan: discovery binds DeviceId, login peeks `AccessToken`, authenticated requests follow the token, logout forgets the token only.
+
+## Gray-list
+
+`affinity.graylist` selects a **different policy** for matching clients. Default: built-in Infuse (`Client` contains `Infuse`, plus `/InfuseSync`) uses `fail_closed` while everyone else uses global `affinity.policy` (`force_reauth`).
+
+Classification (any hit):
+
+1. This request’s `Client=` or path prefix
+2. Stored token row `client` (token-only `/socket?api_key=`)
+3. Stored DeviceId `client` (survives logout)
+
+Not classified by `userId`. A later header-less request does not clear a stamped Infuse DeviceId/token.
+
+Gray-listed hops also disable upstream keep-alive and flush immediately. See [clients.md](clients.md).
+
+## Infuse vs failover
+
+There is no policy that keeps Infuse Library Mode cache valid *and* silently fails over. Gray-list `fail_closed` only avoids a surprise Server Id. See [clients.md](clients.md).

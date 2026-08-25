@@ -1,0 +1,16 @@
+.git
+.github
+.bin
+/bin
+/dist
+/data
+*.db
+*.db-journal
+coverage.out
+.env
+.DS_Store
+.cursor
+local_docs
+*.md
+!LICENSE
+.dockerignore
