@@ -15,10 +15,12 @@ HAP (Highly Available Pudding) is a Jellyfin-aware reverse proxy for **one or mo
 
 ## Status bind
 
-Separate listener (default `127.0.0.1:9100`). Not an HTML page.
+Separate listener (default `127.0.0.1:9100`). `GET /` is a small HTML ops page (loopback by default; no extra auth). JSON paths are unchanged. Binding `status.listen` off loopback exposes the page and the POSTs below.
 
 | Path | Purpose |
 | --- | --- |
+| `GET /` | HTML ops dashboard (status bind only) |
+| `GET /ui/*` | Embedded dashboard assets |
 | `GET /hap/health` | Process liveness |
 | `GET /hap/ready` | Store usable and at least one backend eligible for new clients. A 1-backend `fail_closed`/`pin_unhealthy` pool is also ready when that instance is healthy, degraded, or still unknown (bound traffic may work). |
 | `GET /hap/backends` | Per-backend health layers |
@@ -33,13 +35,12 @@ Separate listener (default `127.0.0.1:9100`). Not an HTML page.
 | `POST /hap/users/by-name/{username}/unpin` | Delete stored token pins for a username (and DeviceId pins on those backends) |
 | `GET /metrics` | Prometheus |
 
-These paths 404 on the public Jellyfin listener.
+`/hap/*` and `/metrics` 404 on the public Jellyfin listener. Public `/` is still proxied to Jellyfin.
 
 ## Non-goals (v1)
 
 - User/item ID translation or forcing matching Jellyfin database IDs (optional Server ID presentation on `/System/Info*` is listed above; it is not a merged library)
 - Multi-HAP process cluster (expected later; Postgres is the default store)
-- HTML admin UI
+- Public-listener admin UI, or rewriting `hap.yaml` from the status API (runtime disable is a store overlay)
 - Replacing the operator's ingress
 - Sharing one image or library cache across backends, or caching library JSON without a token in the key
-- Rewriting `hap.yaml` from the status API (runtime disable is a store overlay)

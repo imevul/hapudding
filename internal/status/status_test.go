@@ -3,6 +3,7 @@ package status
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -15,6 +16,116 @@ import (
 	"github.com/imevul/hapudding/internal/router"
 	"github.com/imevul/hapudding/internal/store"
 )
+
+func TestAdminUIIndex(t *testing.T) {
+	cfg := &config.Config{
+		Affinity: config.Affinity{Policy: "fail_closed", NewClientsRequire: "healthy", Graylist: config.Graylist{Policy: "fail_closed"}},
+		Backends: []config.Backend{{Name: "server-a", URL: "http://127.0.0.1:1", Timeout: time.Second}},
+	}
+	st, err := store.Open("sqlite", filepath.Join(t.TempDir(), "s.db"), time.Hour, time.Hour, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	mon, err := health.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(cfg, st, mon, router.New(cfg, st, mon), nil, nil, nil).Handler()
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET / %d %s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "text/html") {
+		t.Fatalf("content-type %q", ct)
+	}
+	page := rec.Body.String()
+	if !strings.Contains(page, "hap-admin") {
+		t.Fatal("missing hap-admin marker")
+	}
+	if !strings.Contains(page, `id="tab-overview"`) || !strings.Contains(page, `id="tab-users"`) {
+		t.Fatal("missing overview/users tabs")
+	}
+	if !strings.Contains(page, `id="user-modal"`) {
+		t.Fatal("missing user modal")
+	}
+
+	css := httptest.NewRecorder()
+	h.ServeHTTP(css, httptest.NewRequest(http.MethodGet, "/ui/app.css", nil))
+	if css.Code != http.StatusOK || !strings.Contains(css.Header().Get("Content-Type"), "text/css") {
+		t.Fatalf("css %d %s", css.Code, css.Header().Get("Content-Type"))
+	}
+
+	miss := httptest.NewRecorder()
+	h.ServeHTTP(miss, httptest.NewRequest(http.MethodGet, "/ui/secret.txt", nil))
+	if miss.Code != http.StatusNotFound {
+		t.Fatalf("unexpected file %d", miss.Code)
+	}
+
+	backends := httptest.NewRecorder()
+	h.ServeHTTP(backends, httptest.NewRequest(http.MethodGet, "/hap/backends", nil))
+	if backends.Code != http.StatusOK || !strings.Contains(backends.Header().Get("Content-Type"), "json") {
+		t.Fatalf("json still required: %d %s", backends.Code, backends.Header().Get("Content-Type"))
+	}
+}
+
+func TestUsersListSortedByUsernameThenID(t *testing.T) {
+	cfg := &config.Config{
+		Affinity: config.Affinity{Policy: "fail_closed", NewClientsRequire: "healthy", Graylist: config.Graylist{Policy: "fail_closed"}},
+		Backends: []config.Backend{
+			{Name: "server-a", URL: "http://127.0.0.1:1", Timeout: time.Second},
+			{Name: "server-b", URL: "http://127.0.0.1:2", Timeout: time.Second},
+		},
+	}
+	st, err := store.Open("sqlite", filepath.Join(t.TempDir(), "s.db"), time.Hour, time.Hour, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	ctx := context.Background()
+	binds := []store.TokenRow{
+		{UserID: "z-1", Username: "zoe"},
+		{UserID: "a-2", Username: "Ada"},
+		{UserID: "a-1", Username: "ada"},
+	}
+	for _, row := range binds {
+		if err := st.BindToken(ctx, "tok-"+row.UserID, "server-a", row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.BindToken(ctx, "tok-ada-b", "server-b", store.TokenRow{UserID: "a-1", Username: "ada"}); err != nil {
+		t.Fatal(err)
+	}
+	mon, err := health.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(cfg, st, mon, router.New(cfg, st, mon), nil, nil, nil).Handler()
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/hap/users", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("%d %s", rec.Code, rec.Body.String())
+	}
+	var rows []userRow
+	if err := json.Unmarshal(rec.Body.Bytes(), &rows); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]string, 0, len(rows))
+	for _, r := range rows {
+		got = append(got, r.Username+"/"+fmt.Sprint(r.UserID)+"/"+r.Backend)
+	}
+	want := []string{"ada/a-1/server-a", "ada/a-1/server-b", "Ada/a-2/server-a", "zoe/z-1/server-a"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v want %v", got, want)
+		}
+	}
+}
 
 func TestUsersScopedByBackendAndRedacted(t *testing.T) {
 	cfg := &config.Config{

@@ -24,7 +24,7 @@ Instructions for coding agents working in this repository.
 
 - Docs: [`docs/`](docs/) (`SPEC.md`, `ROADMAP.md`, `config.md`, `affinity.md`, `health.md`, `clients.md`)
 - Config example: [`configs/hap.example.yaml`](configs/hap.example.yaml)
-- Code: `cmd/hapudding`, `internal/{authheader,config,store,router,health,proxy,imgcache,libcache,status}`
+- Code: `cmd/hapudding`, `internal/{authheader,config,store,router,health,proxy,imgcache,libcache,status}` (status HTML under `internal/status/ui/`)
 
 ## Verification
 

@@ -7,7 +7,7 @@ YAML file (`--config`) plus environment overrides (env wins).
 | Key | Env | Default | Notes |
 | --- | --- | --- | --- |
 | `listen` | `HAP_LISTEN` | `:8096` | Public Jellyfin-facing bind |
-| `status.listen` | `HAP_STATUS_LISTEN` | `127.0.0.1:9100` | Ops JSON + Prometheus, not an HTML UI |
+| `status.listen` | `HAP_STATUS_LISTEN` | `127.0.0.1:9100` | Ops HTML at `/`, JSON under `/hap/*`, Prometheus `/metrics`. Loopback by default; no extra auth |
 
 ## Backends
 

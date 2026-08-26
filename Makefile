@@ -11,7 +11,7 @@ LDFLAGS  := -s -w -X main.version=$(VERSION)
 
 STATUS ?= http://127.0.0.1:9100
 
-.PHONY: all help build install update check verify ci fmt fmt-check tidy tidy-check vet test test-race coverage run clean docker compose-up compose-postgres backends backend-disable backend-enable user-affinity user-unpin
+.PHONY: all help build install update check verify ci fmt fmt-check tidy tidy-check vet test test-race coverage run clean docker compose-up compose-postgres ui backends backend-disable backend-enable user-affinity user-unpin
 
 all: build
 
@@ -31,6 +31,7 @@ help:
 	@echo "  make tidy/tidy-check — apply / assert go mod tidy"
 	@echo "  make test test-race coverage"
 	@echo "Ops (status bind, default STATUS=$(STATUS)):"
+	@echo "  make ui                       — print HTML dashboard URL"
 	@echo "  make backends                 — GET /hap/backends"
 	@echo "  make backend-disable NAME=…   — POST /hap/backends/NAME/disable"
 	@echo "  make backend-enable NAME=…    — POST /hap/backends/NAME/enable"
@@ -109,6 +110,9 @@ compose-up:
 	docker compose up --build
 
 compose-postgres: compose-up
+
+ui:
+	@echo $(STATUS)/
 
 backends:
 	curl -sS $(STATUS)/hap/backends

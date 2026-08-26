@@ -9,7 +9,7 @@
 - **P1 Affinity**: auth parse, SQLite or Postgres store, lookup, three policies, client gray-list
 - **P2 Proxy**: streaming HTTP/WS, login peek, honest errors
 - **P3 Health**: layered probes, status JSON + Prometheus
-- **Future**: multi-HAP, user/item ID maps, HTML admin UI
+- **Future**: multi-HAP, user/item ID maps, status-bind auth
 
 ---
 
@@ -71,7 +71,8 @@
 | F-2a | Optional stable Server ID on `GET /System/Info*` only | [X] |
 | F-2b | Operator User/Item GUID maps (paths + JSON both directions) | [ ] |
 | F-2c | Provider-ID join (TMDB/IMDB/MusicBrainz) to fill maps | [ ] |
-| F-3 | HTML admin UI | [ ] |
+| F-3 | HTML admin UI on the status bind (`GET /`) | [X] |
+| F-3b | Optional status-bind shared secret if listen is not loopback | [ ] |
 
 `F-2a` — opt-in `translate.server_id` (default off). Replaces only the top-level `Id` on `GET /System/Info` and `GET /System/Info/Public`. Optional `name` replaces `ServerName`. Health probes keep the native backend Id and name. Never forwards token A→B. One Server ID for two databases can make Infuse Library Mode worse; `fail_closed` stays the safe Infuse path.
 
@@ -80,3 +81,5 @@
 `F-2c` — build item maps from TMDB/IMDB/MusicBrainz on each backend (admin-keyed API or `/Items` scan). Same rewrite engine as F-2b, automatic fill. Provider collisions, missing IDs, and live library edits make this never a true merged library. Still incomplete for plugins. Research spike before committing to a store schema.
 
 Neither B nor C makes Infuse Library Mode + silent failover “just work.” `fail_closed` remains the honest Infuse policy.
+
+`F-3` — status-bind HTML dashboard at `http://127.0.0.1:9100/`. Reads existing `/hap/*` JSON; disable/enable and unpin use the existing POSTs (confirm in the page). No hap.yaml editor. Public Jellyfin listener still 404s `/hap/*` and `/metrics`. `F-3b` is auth if an operator binds status off loopback.

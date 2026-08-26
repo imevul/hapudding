@@ -3,8 +3,10 @@ package status
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -34,6 +36,8 @@ func New(cfg *config.Config, st store.Store, mon *health.Monitor, rt *router.Rou
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /{$}", s.uiIndex)
+	mux.HandleFunc("GET /ui/{file}", s.uiFile)
 	mux.HandleFunc("/hap/health", s.health)
 	mux.HandleFunc("/hap/ready", s.ready)
 	mux.HandleFunc("GET /hap/backends", s.backends)
@@ -341,7 +345,26 @@ func (s *Server) listUsers(r *http.Request) ([]userRow, error) {
 	for _, sess := range grouped {
 		out = append(out, s.rowFromTokens(sess, s.mon.State(sess[0].Backend)))
 	}
+	slices.SortFunc(out, func(a, b userRow) int {
+		if c := strings.Compare(strings.ToLower(a.Username), strings.ToLower(b.Username)); c != 0 {
+			return c
+		}
+		if c := strings.Compare(userIDKey(a.UserID), userIDKey(b.UserID)); c != 0 {
+			return c
+		}
+		return strings.Compare(a.Backend, b.Backend)
+	})
 	return out, nil
+}
+
+func userIDKey(v any) string {
+	if v == nil {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return fmt.Sprint(v)
 }
 
 func (s *Server) rowFromTokens(sess []store.TokenRow, st health.State) userRow {

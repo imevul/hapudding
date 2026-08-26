@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en" id="hap-admin">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HAP</title>
+  <link rel="stylesheet" href="/ui/app.css">
+  <link rel="icon" href="/ui/favicon.svg" type="image/svg+xml">
+</head>
+<body>
+  <header>
+    <img class="logo" src="/ui/favicon.svg" alt="" aria-hidden="true">
+    <div>
+      <h1>HAP</h1>
+      <p class="sub">Highly Available Pudding</p>
+    </div>
+    <div class="status-pills">
+      <span id="ready-pill" class="pill muted">ready…</span>
+      <span id="health-pill" class="pill muted">health…</span>
+    </div>
+  </header>
+
+  <nav class="tabs" role="tablist" aria-label="Dashboard">
+    <button type="button" role="tab" id="tab-btn-overview" aria-controls="tab-overview" aria-selected="true" data-tab="overview">Overview</button>
+    <button type="button" role="tab" id="tab-btn-users" aria-controls="tab-users" aria-selected="false" data-tab="users">Users</button>
+  </nav>
+
+  <main>
+    <div id="tab-overview" role="tabpanel" aria-labelledby="tab-btn-overview">
+      <section>
+        <h2>Backends</h2>
+        <div id="backends">Loading…</div>
+      </section>
+      <section>
+        <h2>Affinity</h2>
+        <div id="affinity">Loading…</div>
+      </section>
+      <section>
+        <h2>User affinity</h2>
+        <p class="hint">Login hints from YAML. Not editable here.</p>
+        <div id="user-affinity">Loading…</div>
+      </section>
+      <section>
+        <h2>Performance</h2>
+        <div id="perf">Loading…</div>
+      </section>
+    </div>
+    <div id="tab-users" role="tabpanel" aria-labelledby="tab-btn-users" hidden>
+      <section>
+        <h2>Users</h2>
+        <form id="unpin-form" class="row">
+          <label>
+            Unpin username
+            <input id="unpin-name" type="text" autocomplete="off" spellcheck="false">
+          </label>
+          <button type="submit" class="danger">Unpin</button>
+        </form>
+        <p id="unpin-result" class="hint" hidden></p>
+        <div id="users">Loading…</div>
+      </section>
+    </div>
+  </main>
+
+  <div id="user-modal" class="modal" hidden>
+    <div class="modal-backdrop" data-close="1"></div>
+    <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="user-modal-title">
+      <div class="modal-head">
+        <h2 id="user-modal-title">User</h2>
+        <button type="button" class="modal-close" data-close="1" aria-label="Close">Close</button>
+      </div>
+      <div id="user-detail"></div>
+    </div>
+  </div>
+
+  <footer>
+    Status bind only. Binding <code>status.listen</code> beyond loopback exposes this page and disable/unpin.
+    JSON stays at <code>/hap/*</code>. Prometheus at <code>/metrics</code>.
+  </footer>
+  <script src="/ui/app.js"></script>
+</body>
+</html>
