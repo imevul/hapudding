@@ -17,11 +17,45 @@ var reservedHopHeaders = map[string]struct{}{
 }
 
 type Config struct {
-	Listen   string    `yaml:"listen"`
-	Status   Status    `yaml:"status"`
-	Backends []Backend `yaml:"backends"`
-	Affinity Affinity  `yaml:"affinity"`
-	Health   Health    `yaml:"health"`
+	Listen      string      `yaml:"listen"`
+	Status      Status      `yaml:"status"`
+	Backends    []Backend   `yaml:"backends"`
+	Affinity    Affinity    `yaml:"affinity"`
+	Health      Health      `yaml:"health"`
+	Performance Performance `yaml:"performance"`
+}
+
+type Performance struct {
+	AuthTimeout        time.Duration      `yaml:"auth_timeout"`
+	Cache              Cache              `yaml:"cache"`
+	Library            LibraryCache       `yaml:"library"`
+	Coalesce           Toggle             `yaml:"coalesce"`
+	WarmLogin          Toggle             `yaml:"warm_login"`
+	LibraryConcurrency LibraryConcurrency `yaml:"library_concurrency"`
+}
+
+type Cache struct {
+	Enabled    *bool         `yaml:"enabled"`
+	MaxBytes   int64         `yaml:"max_bytes"`
+	MaxObject  int64         `yaml:"max_object"`
+	DefaultTTL time.Duration `yaml:"default_ttl"`
+	MaxTTL     time.Duration `yaml:"max_ttl"`
+}
+
+type LibraryCache struct {
+	Enabled   *bool         `yaml:"enabled"`
+	TTL       time.Duration `yaml:"ttl"`
+	MaxBytes  int64         `yaml:"max_bytes"`
+	MaxObject int64         `yaml:"max_object"`
+}
+
+type Toggle struct {
+	Enabled *bool `yaml:"enabled"`
+}
+
+type LibraryConcurrency struct {
+	Enabled *bool `yaml:"enabled"`
+	Max     int   `yaml:"max"`
 }
 
 type Status struct {
@@ -36,6 +70,7 @@ type Backend struct {
 	TLS       TLS               `yaml:"tls"`
 	Timeout   time.Duration     `yaml:"timeout"`
 	HealthURL string            `yaml:"health_url"`
+	Disabled  bool              `yaml:"disabled"`
 }
 
 type TLS struct {
@@ -125,10 +160,13 @@ func applyDefaults(c *Config) {
 		c.Affinity.NewClientsRequire = "healthy"
 	}
 	if c.Affinity.Store == "" {
-		c.Affinity.Store = "sqlite"
+		c.Affinity.Store = "postgres"
 	}
 	if c.Affinity.SQLite.Path == "" {
 		c.Affinity.SQLite.Path = "./data/affinity.db"
+	}
+	if c.Affinity.Store == "postgres" && c.Affinity.Postgres.URL == "" {
+		c.Affinity.Postgres.URL = "postgres://hap:hap@localhost:5432/hap?sslmode=disable"
 	}
 	if c.Affinity.TokenTTL == 0 {
 		c.Affinity.TokenTTL = 720 * time.Hour
@@ -162,6 +200,45 @@ func applyDefaults(c *Config) {
 	}
 	if c.Health.PassiveAuthFailures.Window == 0 {
 		c.Health.PassiveAuthFailures.Window = 60 * time.Second
+	}
+	if c.Performance.AuthTimeout == 0 {
+		c.Performance.AuthTimeout = 60 * time.Second
+	}
+	if c.Performance.Cache.Enabled == nil {
+		t := true
+		c.Performance.Cache.Enabled = &t
+	}
+	if c.Performance.Cache.MaxBytes == 0 {
+		c.Performance.Cache.MaxBytes = 256 << 20
+	}
+	if c.Performance.Cache.MaxObject == 0 {
+		c.Performance.Cache.MaxObject = 2 << 20
+	}
+	if c.Performance.Cache.DefaultTTL == 0 {
+		c.Performance.Cache.DefaultTTL = 15 * time.Minute
+	}
+	if c.Performance.Cache.MaxTTL == 0 {
+		c.Performance.Cache.MaxTTL = 24 * time.Hour
+	}
+	if c.Performance.Library.Enabled == nil {
+		t := true
+		c.Performance.Library.Enabled = &t
+	}
+	if c.Performance.Library.TTL == 0 {
+		c.Performance.Library.TTL = 30 * time.Second
+	}
+	if c.Performance.Library.MaxBytes == 0 {
+		c.Performance.Library.MaxBytes = 64 << 20
+	}
+	if c.Performance.Library.MaxObject == 0 {
+		c.Performance.Library.MaxObject = 4 << 20
+	}
+	if c.Performance.Coalesce.Enabled == nil {
+		t := true
+		c.Performance.Coalesce.Enabled = &t
+	}
+	if c.Performance.LibraryConcurrency.Max == 0 {
+		c.Performance.LibraryConcurrency.Max = 3
 	}
 	for i := range c.Backends {
 		if c.Backends[i].Timeout == 0 {
@@ -198,6 +275,31 @@ func applyEnv(c *Config) {
 	if v := os.Getenv("HAP_GRAYLIST_POLICY"); v != "" {
 		c.Affinity.Graylist.Policy = v
 	}
+	if v := os.Getenv("HAP_CACHE_ENABLED"); v != "" {
+		t := envBool(v)
+		c.Performance.Cache.Enabled = &t
+	}
+	if v := os.Getenv("HAP_LIBRARY_CACHE_ENABLED"); v != "" {
+		t := envBool(v)
+		c.Performance.Library.Enabled = &t
+	}
+	if v := os.Getenv("HAP_COALESCE_ENABLED"); v != "" {
+		t := envBool(v)
+		c.Performance.Coalesce.Enabled = &t
+	}
+	if v := os.Getenv("HAP_WARM_LOGIN_ENABLED"); v != "" {
+		t := envBool(v)
+		c.Performance.WarmLogin.Enabled = &t
+	}
+	if v := os.Getenv("HAP_LIBRARY_CONCURRENCY_ENABLED"); v != "" {
+		t := envBool(v)
+		c.Performance.LibraryConcurrency.Enabled = &t
+	}
+	if v := os.Getenv("HAP_AUTH_TIMEOUT"); v != "" {
+		if d, ok := envDuration(v); ok {
+			c.Performance.AuthTimeout = d
+		}
+	}
 	for i := range c.Backends {
 		prefix := "HAP_BACKEND_" + envName(c.Backends[i].Name) + "_HEADER_"
 		for _, e := range os.Environ() {
@@ -215,6 +317,23 @@ func envName(s string) string {
 	s = strings.ToUpper(s)
 	s = strings.ReplaceAll(s, "-", "_")
 	return s
+}
+
+func envBool(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func envDuration(v string) (time.Duration, bool) {
+	d, err := time.ParseDuration(strings.TrimSpace(v))
+	if err != nil || d <= 0 {
+		return 0, false
+	}
+	return d, true
 }
 
 func validate(c *Config) error {
@@ -244,6 +363,21 @@ func validate(c *Config) error {
 	if c.Affinity.Store == "postgres" && c.Affinity.Postgres.URL == "" {
 		return fmt.Errorf("postgres store requires HAP_DATABASE_URL or affinity.postgres.url")
 	}
+	if c.Performance.CacheEnabled() && c.Performance.Cache.MaxBytes <= 0 {
+		return fmt.Errorf("performance.cache.max_bytes must be > 0 when enabled")
+	}
+	if c.Performance.Cache.MaxObject > c.Performance.Cache.MaxBytes {
+		return fmt.Errorf("performance.cache.max_object must be <= performance.cache.max_bytes")
+	}
+	if c.Performance.LibraryEnabled() && c.Performance.Library.MaxBytes <= 0 {
+		return fmt.Errorf("performance.library.max_bytes must be > 0 when enabled")
+	}
+	if c.Performance.Library.MaxObject > c.Performance.Library.MaxBytes && c.Performance.Library.MaxBytes > 0 {
+		return fmt.Errorf("performance.library.max_object must be <= performance.library.max_bytes")
+	}
+	if c.Performance.LibraryConcurrencyEnabled() && c.Performance.LibraryConcurrency.Max < 1 {
+		return fmt.Errorf("performance.library_concurrency.max must be >= 1 when enabled")
+	}
 	seen := map[string]struct{}{}
 	for _, b := range c.Backends {
 		if b.Name == "" || b.URL == "" {
@@ -260,6 +394,26 @@ func validate(c *Config) error {
 		}
 	}
 	return nil
+}
+
+func (p Performance) CacheEnabled() bool {
+	return p.Cache.Enabled != nil && *p.Cache.Enabled
+}
+
+func (p Performance) LibraryEnabled() bool {
+	return p.Library.Enabled != nil && *p.Library.Enabled
+}
+
+func (p Performance) CoalesceEnabled() bool {
+	return p.Coalesce.Enabled != nil && *p.Coalesce.Enabled
+}
+
+func (p Performance) WarmLoginEnabled() bool {
+	return p.WarmLogin.Enabled != nil && *p.WarmLogin.Enabled
+}
+
+func (p Performance) LibraryConcurrencyEnabled() bool {
+	return p.LibraryConcurrency.Enabled != nil && *p.LibraryConcurrency.Enabled
 }
 
 func (h Health) PublicInfoEnabled() bool {

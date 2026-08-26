@@ -1,33 +1,32 @@
-# SQLite: docker compose up --build
-# Postgres: HAP_STORE=postgres HAP_DATABASE_URL=postgres://hap:hap@postgres:5432/hap?sslmode=disable \
-#           docker compose --profile postgres up --build
+# Postgres is the default store. SQLite: HAP_STORE=sqlite docker compose up --build
 # Switching drivers does not migrate existing bindings.
 services:
   hap:
     build: .
+    # Root only so the entrypoint can chown /data (named volumes start as root).
+    # hapudding then runs as uid 65532.
+    user: "0:0"
     env_file:
       - path: .env
         required: false
     environment:
       HAP_LISTEN: ":8096"
       HAP_STATUS_LISTEN: "0.0.0.0:9100"
-      HAP_STORE: ${HAP_STORE:-sqlite}
+      HAP_STORE: ${HAP_STORE:-postgres}
       HAP_SQLITE_PATH: /data/affinity.db
-      HAP_DATABASE_URL: ${HAP_DATABASE_URL:-}
+      HAP_DATABASE_URL: ${HAP_DATABASE_URL:-postgres://hap:hap@postgres:5432/hap?sslmode=disable}
     volumes:
       - hap-data:/data
-      - ./configs/hap.example.yaml:/config/hap.yaml:ro
+      - ./configs/hap.yaml:/config/hap.yaml:ro
     command: ["--config", "/config/hap.yaml"]
     ports:
       - "8096:8096"
-      - "9100:9100"
+      - "127.0.0.1:9100:9100"
     depends_on:
       postgres:
-        condition: service_started
-        required: false
+        condition: service_healthy
 
   postgres:
-    profiles: [postgres]
     image: postgres:16
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-hap}
@@ -37,6 +36,11 @@ services:
       - pg-data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hap} -d ${POSTGRES_DB:-hap}"]
+      interval: 2s
+      timeout: 5s
+      retries: 20
 
 volumes:
   hap-data:

@@ -23,7 +23,7 @@ Instructions for coding agents working in this repository.
 
 - Docs: [`docs/`](docs/) (`SPEC.md`, `ROADMAP.md`, `config.md`, `affinity.md`, `health.md`, `clients.md`)
 - Config example: [`configs/hap.example.yaml`](configs/hap.example.yaml)
-- Code: `cmd/hapudding`, `internal/{authheader,config,store,router,health,proxy,status}`
+- Code: `cmd/hapudding`, `internal/{authheader,config,store,router,health,proxy,imgcache,libcache,status}`
 
 ## Verification
 
@@ -31,6 +31,7 @@ Instructions for coding agents working in this repository.
 make verify              # fmt-check tidy-check vet test build
 make ci                  # plus test-race
 make test test-race
+make update              # git pull --ff-only, tidy, build; rebuild running Compose
 ```
 
 When a change ships, splits, or reschedules a roadmap line, update [`docs/ROADMAP.md`](docs/ROADMAP.md) in the same change.

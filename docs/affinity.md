@@ -4,10 +4,17 @@
 
 1. **Token** (hashed) → backend. Always wins.
 2. Else **DeviceId** → backend.
-3. Else **anon glue**: hash(client IP + User-Agent), short TTL.
-4. Else pick among backends eligible for new clients (consistent-hash DeviceId when present; otherwise least-loaded). `hap_backend` cookie is a preference among eligible backends only.
+3. Else, for **header-less media** (images, video/audio streams, subtitles, attachments, trickplay):
+   - `hap_backend` cookie, only if that backend already has a live token or DeviceId row (not sole affinity).
+   - Else **session IP glue**: hash(client IP) written on login and token-bearing requests.
+4. Else **anon glue**: hash(client IP + User-Agent), short TTL.
+5. Else pick among backends eligible for new clients (consistent-hash DeviceId when present; otherwise least-loaded). `hap_backend` cookie is a preference among eligible backends only.
 
-A token issued by Server A is never sent to Server B.
+A token issued by Server A is never sent to Server B. Store lookup errors fail closed (HAP 503) instead of looking like a cache miss.
+
+Password / Quick Connect login is the exception: if the chosen backend times out or returns 401, HAP retries other eligible backends with the same body (no existing token is forwarded). A 200 binds DeviceId and token to the server that issued them.
+
+The default store is **Postgres**. SQLite remains available and uses WAL, a 5s busy timeout, and a single writer connection so a home-page image burst does not lock the affinity DB. Switching drivers does not migrate bindings.
 
 ## Policies
 
@@ -46,6 +53,16 @@ Classification (any hit):
 Not classified by `userId`. A later header-less request does not clear a stamped Infuse DeviceId/token.
 
 Gray-listed hops also disable upstream keep-alive and flush immediately. See [clients.md](clients.md).
+
+## Image cache
+
+Optional (`performance.cache.enabled`, on by default after `Load`). Not an affinity source. After a backend is chosen, HAP may reuse a prior `200` image for that **same backend** + path + query + `Accept`. It does not share posters across backends and does not cache `/Users/…/Images`.
+
+## Library JSON cache
+
+Optional (`performance.library.enabled`, on by default after `Load`). Keyed by **backend + token hash + URL**. Allowlisted home-page GETs only (`Views`, `Resume`, `NextUp`, `Latest`). A token issued on server-b is never used to serve server-a JSON. Mutations (`/Sessions/Playing`, played/favorite/UserData/rating) drop that token’s entries.
+
+Identical in-flight image/library GETs may be coalesced (`performance.coalesce`). See [config.md](config.md).
 
 ## Infuse vs failover
 

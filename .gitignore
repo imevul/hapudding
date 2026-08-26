@@ -5,6 +5,7 @@
 *.db-journal
 coverage.out
 .env
+configs/hap.yaml
 .DS_Store
 
 # Go

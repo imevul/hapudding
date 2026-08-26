@@ -26,20 +26,24 @@ type Decision struct {
 }
 
 type Router struct {
-	cfg *config.Config
-	st  store.Store
-	mon *health.Monitor
-	by  map[string]*config.Backend
+	cfg   *config.Config
+	st    store.Store
+	mon   *health.Monitor
+	by    map[string]*config.Backend
+	flags *Flags
 }
 
 func New(cfg *config.Config, st store.Store, mon *health.Monitor) *Router {
-	r := &Router{cfg: cfg, st: st, mon: mon, by: map[string]*config.Backend{}}
+	r := &Router{cfg: cfg, st: st, mon: mon, by: map[string]*config.Backend{}, flags: newFlags(cfg)}
 	for i := range cfg.Backends {
 		b := &cfg.Backends[i]
 		r.by[b.Name] = b
 	}
+	r.flags.load(context.Background(), st)
 	return r
 }
+
+func (r *Router) Flags() *Flags { return r.flags }
 
 func (r *Router) Backend(name string) *config.Backend {
 	return r.by[name]
@@ -60,10 +64,18 @@ func (r *Router) Decide(ctx context.Context, req *http.Request, id authheader.Id
 	var tokenRow *store.TokenRow
 	var deviceRow *store.SimpleBinding
 	if id.Token != "" {
-		tokenRow, _ = r.st.LookupToken(ctx, id.Token)
+		row, err := r.st.LookupToken(ctx, id.Token)
+		if err != nil {
+			return storeUnavailable()
+		}
+		tokenRow = row
 	}
 	if id.DeviceID != "" {
-		deviceRow, _ = r.st.LookupDevice(ctx, id.DeviceID)
+		row, err := r.st.LookupDevice(ctx, id.DeviceID)
+		if err != nil {
+			return storeUnavailable()
+		}
+		deviceRow = row
 	}
 	tokenClient, deviceClient := "", ""
 	if tokenRow != nil {
@@ -81,11 +93,64 @@ func (r *Router) Decide(ctx context.Context, req *http.Request, id authheader.Id
 	if deviceRow != nil {
 		return r.bound(ctx, deviceRow.Backend, store.KindDevice, id, policy, gray)
 	}
-	if row, _ := r.st.LookupAnon(ctx, anonKey); row != nil {
+	if isSessionMediaPath(req) {
+		if d, ok := r.followSession(ctx, req, id, policy, gray); ok {
+			return d
+		}
+	}
+	row, err := r.st.LookupAnon(ctx, anonKey)
+	if err != nil {
+		return storeUnavailable()
+	}
+	if row != nil {
 		return r.bound(ctx, row.Backend, store.KindAnon, id, policy, gray)
 	}
 
 	return r.pickNew(ctx, req, id, anonKey, policy, gray)
+}
+
+func storeUnavailable() Decision {
+	return Decision{HAPError: "store_unavailable", HAPStatus: http.StatusServiceUnavailable}
+}
+
+// followSession keeps header-less images/streams on a live session.
+// Cookie is used only when that backend already has a token or DeviceId row
+// (not sole affinity). Else IP-only glue written on login/token traffic.
+func (r *Router) followSession(ctx context.Context, req *http.Request, id authheader.Identifiers, policy string, gray bool) (Decision, bool) {
+	if hint := cookieHint(req); hint != "" && r.by[hint] != nil && r.hasLiveBinding(ctx, hint) {
+		return r.bound(ctx, hint, store.KindAnon, id, policy, gray), true
+	}
+	ip := clientIP(req)
+	row, err := r.st.LookupAnon(ctx, store.HashSessionIP(ip))
+	if err != nil {
+		return storeUnavailable(), true
+	}
+	if row != nil {
+		return r.bound(ctx, row.Backend, store.KindAnon, id, policy, gray), true
+	}
+	return Decision{}, false
+}
+
+func (r *Router) hasLiveBinding(ctx context.Context, name string) bool {
+	counts, err := r.st.CountsByBackend(ctx)
+	if err != nil {
+		return false
+	}
+	c := counts[name]
+	return c.Tokens+c.Devices > 0
+}
+
+func isSessionMediaPath(req *http.Request) bool {
+	if req == nil || req.URL == nil {
+		return false
+	}
+	p := strings.ToLower(req.URL.Path)
+	return strings.Contains(p, "/images") ||
+		strings.Contains(p, "/videos/") ||
+		strings.Contains(p, "/audio/") ||
+		strings.Contains(p, "/subtitles") ||
+		strings.Contains(p, "/attachments") ||
+		strings.Contains(p, "/trickplay")
 }
 
 // Graylisted reports whether this request or stored client class matches the gray-list.
@@ -118,6 +183,9 @@ func (r *Router) policyFor(graylisted bool) string {
 
 func (r *Router) bound(ctx context.Context, name string, kind store.BindingKind, id authheader.Identifiers, policy string, gray bool) Decision {
 	b := r.by[name]
+	if r.flags.Disabled(name) {
+		return Decision{Backend: b, Kind: kind, Bound: true, Graylisted: gray, HAPError: "backend_disabled", HAPStatus: http.StatusServiceUnavailable}
+	}
 	st := r.mon.State(name)
 	if st == health.StateHealthy || st == health.StateDegraded || st == health.StateUnknown {
 		return Decision{Backend: b, Kind: kind, Bound: true, Graylisted: gray}
@@ -155,6 +223,9 @@ func (r *Router) pickNew(ctx context.Context, req *http.Request, id authheader.I
 		// Hash across the full pool so first placement stays even if that backend is down.
 		name := r.hashName(id.DeviceID, anonKey, r.Names())
 		b := r.by[name]
+		if r.flags.Disabled(name) {
+			return Decision{Backend: b, Kind: store.KindDevice, Graylisted: gray, HAPError: "backend_disabled", HAPStatus: http.StatusServiceUnavailable}
+		}
 		st := r.mon.State(name)
 		if st == health.StateUnhealthy {
 			return Decision{Backend: b, Kind: store.KindDevice, Graylisted: gray, HAPError: "bound_backend_unavailable", HAPStatus: http.StatusServiceUnavailable}
@@ -197,10 +268,32 @@ func (r *Router) pickEligible(ctx context.Context, id authheader.Identifiers, hi
 	return Decision{Backend: best}
 }
 
+// LoginCandidates is the preferred backend first, then other eligible backends.
+// Used only for password/Quick Connect login so a pinned DeviceId can fail over.
+func (r *Router) LoginCandidates(preferred string) []*config.Backend {
+	elig := r.eligible()
+	var first *config.Backend
+	var rest []*config.Backend
+	for _, b := range elig {
+		if b.Name == preferred {
+			first = b
+			continue
+		}
+		rest = append(rest, b)
+	}
+	if first != nil {
+		return append([]*config.Backend{first}, rest...)
+	}
+	return rest
+}
+
 func (r *Router) eligible() []*config.Backend {
 	var out []*config.Backend
 	for i := range r.cfg.Backends {
 		b := &r.cfg.Backends[i]
+		if r.flags.Disabled(b.Name) {
+			continue
+		}
 		st := r.mon.State(b.Name)
 		ok := st == health.StateHealthy || st == health.StateUnknown
 		if r.cfg.Affinity.NewClientsRequire == "healthy_or_degraded" {
@@ -268,7 +361,7 @@ func (r *Router) Ready() bool {
 		return true
 	}
 	// 1-backend fail_closed/pin: ready if that backend can serve bound traffic (not unknown-empty)
-	if len(r.cfg.Backends) == 1 {
+	if len(r.cfg.Backends) == 1 && !r.flags.Disabled(r.cfg.Backends[0].Name) {
 		st := r.mon.State(r.cfg.Backends[0].Name)
 		return st == health.StateHealthy || st == health.StateDegraded || st == health.StateUnknown
 	}

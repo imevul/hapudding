@@ -24,13 +24,15 @@ Official iOS/tvOS. Persists Server Id. Same `force_reauth` warning. Prefer `Auth
 
 WebSocket is often `/socket?api_key=…&deviceId=…` — token only on the query string. HAP parses `ApiKey` / `api_key` and `deviceId` / `device_id`.
 
+`<img>` and some stream URLs send no `Authorization`. HAP sets `hap_backend` on proxied responses and keeps those paths on a live session (cookie if that backend has a token/DeviceId, else IP glue from login). Token still wins when `api_key` is present.
+
 ## Android / Android TV
 
 One TV, many DeviceIds (hashed with username). Token still wins. Do not idle-timeout WebSockets in tens of seconds.
 
 ## Delfin
 
-Open source Linux GTK client. Persistent UUID DeviceId, no cookies, Quick Connect, Intro Skipper and Trickplay plugin paths. HAP proxies unknown plugin paths.
+Open source Linux GTK client (libsoup). Persistent UUID DeviceId, no cookies, Quick Connect, Intro Skipper and Trickplay plugin paths. HAP accepts `Expect: 100-continue` before the hop so password login cannot deadlock. Login that times out or 401s on the pinned backend is retried on other eligible servers. HAP proxies unknown plugin paths.
 
 ## CLIamp
 

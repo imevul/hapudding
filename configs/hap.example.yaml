@@ -4,8 +4,10 @@ status:
 backends:
   - name: server-a
     url: http://127.0.0.1:8097
+    disabled: false
   - name: server-b
     url: http://127.0.0.1:8098
+    disabled: false
 affinity:
   policy: force_reauth
   graylist:
@@ -15,14 +17,34 @@ affinity:
     #   - Infuse
     path_prefixes: []
   new_clients_require: healthy
-  store: sqlite
+  store: postgres
   sqlite:
     path: ./data/affinity.db
   postgres:
-    url: ""
+    url: postgres://hap:hap@localhost:5432/hap?sslmode=disable
   token_ttl: 720h
   device_ttl: 720h
   anon_ttl: 15m
+performance:
+  auth_timeout: 60s
+  cache:
+    enabled: true
+    max_bytes: 268435456
+    max_object: 2097152
+    default_ttl: 15m
+    max_ttl: 24h
+  library:
+    enabled: true
+    ttl: 30s
+    max_bytes: 67108864
+    max_object: 4194304
+  coalesce:
+    enabled: true
+  warm_login:
+    enabled: false
+  library_concurrency:
+    enabled: false
+    max: 3
 health:
   interval: 10s
   public_info: true

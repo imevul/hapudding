@@ -9,32 +9,57 @@ import (
 	"github.com/imevul/hapudding/internal/authheader"
 	"github.com/imevul/hapudding/internal/config"
 	"github.com/imevul/hapudding/internal/health"
+	"github.com/imevul/hapudding/internal/imgcache"
+	"github.com/imevul/hapudding/internal/libcache"
 	"github.com/imevul/hapudding/internal/router"
 	"github.com/imevul/hapudding/internal/store"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 type Server struct {
-	cfg *config.Config
-	st  store.Store
-	mon *health.Monitor
-	rt  *router.Router
+	cfg   *config.Config
+	st    store.Store
+	mon   *health.Monitor
+	rt    *router.Router
+	cache *imgcache.Cache
+	lib   *libcache.Cache
+	perf  func() any
 }
 
-func New(cfg *config.Config, st store.Store, mon *health.Monitor, rt *router.Router) *Server {
-	return &Server{cfg: cfg, st: st, mon: mon, rt: rt}
+func New(cfg *config.Config, st store.Store, mon *health.Monitor, rt *router.Router, cache *imgcache.Cache, lib *libcache.Cache, perf func() any) *Server {
+	return &Server{cfg: cfg, st: st, mon: mon, rt: rt, cache: cache, lib: lib, perf: perf}
 }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/hap/health", s.health)
 	mux.HandleFunc("/hap/ready", s.ready)
-	mux.HandleFunc("/hap/backends", s.backends)
+	mux.HandleFunc("GET /hap/backends", s.backends)
+	mux.HandleFunc("POST /hap/backends/{name}/disable", s.disableBackend)
+	mux.HandleFunc("POST /hap/backends/{name}/enable", s.enableBackend)
 	mux.HandleFunc("/hap/affinity", s.affinity)
+	mux.HandleFunc("/hap/cache", s.cacheStatus)
+	mux.HandleFunc("/hap/performance", s.performance)
 	mux.HandleFunc("/hap/users", s.users)
 	mux.HandleFunc("/hap/users/", s.user)
 	mux.Handle("/metrics", promhttp.Handler())
 	return mux
+}
+
+func (s *Server) cacheStatus(w http.ResponseWriter, _ *http.Request) {
+	if s.cache == nil {
+		writeJSON(w, http.StatusOK, imgcache.Stats{Enabled: false})
+		return
+	}
+	writeJSON(w, http.StatusOK, s.cache.Stats())
+}
+
+func (s *Server) performance(w http.ResponseWriter, _ *http.Request) {
+	if s.perf == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"images": imgcache.Stats{Enabled: s.cache != nil}, "library": libcache.Stats{Enabled: s.lib != nil}})
+		return
+	}
+	writeJSON(w, http.StatusOK, s.perf())
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
@@ -49,12 +74,64 @@ func (s *Server) ready(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (s *Server) backends(w http.ResponseWriter, _ *http.Request) {
+type backendView struct {
+	health.Snapshot
+	Disabled        bool `json:"disabled"`
+	ConfigDisabled  bool `json:"config_disabled"`
+	RuntimeDisabled bool `json:"runtime_disabled"`
+}
+
+func (s *Server) backendViews() []backendView {
 	snaps := s.mon.All()
-	for i := range snaps {
-		snaps[i].IneligibleReason = health.IneligibleReason(snaps[i], s.cfg.Affinity.NewClientsRequire)
+	out := make([]backendView, 0, len(snaps))
+	for _, snap := range snaps {
+		v := backendView{
+			Snapshot:        snap,
+			Disabled:        s.rt.Flags().Disabled(snap.Name),
+			ConfigDisabled:  s.rt.Flags().ConfigDisabled(snap.Name),
+			RuntimeDisabled: s.rt.Flags().RuntimeDisabled(snap.Name),
+		}
+		if v.Disabled {
+			v.IneligibleReason = "disabled"
+		} else {
+			v.IneligibleReason = health.IneligibleReason(snap, s.cfg.Affinity.NewClientsRequire)
+		}
+		out = append(out, v)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"backends": snaps})
+	return out
+}
+
+func (s *Server) backends(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"backends": s.backendViews()})
+}
+
+func (s *Server) disableBackend(w http.ResponseWriter, r *http.Request) {
+	s.setBackendDisabled(w, r, true)
+}
+
+func (s *Server) enableBackend(w http.ResponseWriter, r *http.Request) {
+	s.setBackendDisabled(w, r, false)
+}
+
+func (s *Server) setBackendDisabled(w http.ResponseWriter, r *http.Request, disabled bool) {
+	name := r.PathValue("name")
+	if s.rt.Backend(name) == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "not_found", "backend": name})
+		return
+	}
+	if !disabled && s.rt.Flags().ConfigDisabled(name) {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":    "config_disabled",
+			"backend":  name,
+			"backends": s.backendViews(),
+		})
+		return
+	}
+	if err := s.rt.Flags().SetRuntime(r.Context(), s.st, name, disabled); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"backends": s.backendViews()})
 }
 
 func (s *Server) affinity(w http.ResponseWriter, r *http.Request) {

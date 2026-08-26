@@ -69,6 +69,9 @@ type Store interface {
 	DeleteClient(ctx context.Context, token, deviceID string) error
 	ListTokens(ctx context.Context) ([]TokenRow, error)
 	CountsByBackend(ctx context.Context) (map[string]Counts, error)
+	ListBackendFlags(ctx context.Context) (map[string]bool, error)
+	SetBackendDisabled(ctx context.Context, name string, disabled bool) error
+	ClearBackendFlag(ctx context.Context, name string) error
 	Ping(ctx context.Context) error
 	Close() error
 }
@@ -99,13 +102,25 @@ func Open(driver, dsn string, tokenTTL, deviceTTL, anonTTL time.Duration) (*SQLS
 	default:
 		return nil, fmt.Errorf("unknown store driver %q", driver)
 	}
+	if driver == "sqlite" {
+		dsn = sqliteDSN(dsn)
+	}
 	db, err := sql.Open(goDriver, dsn)
 	if err != nil {
 		return nil, err
 	}
+	if driver == "sqlite" {
+		if err := configureSQLite(db); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+	}
 	s := &SQLStore{db: db, placeholder: ph, tokenTTL: tokenTTL, deviceTTL: deviceTTL, anonTTL: anonTTL}
 	if err := s.migrate(context.Background()); err != nil {
 		_ = db.Close()
+		if goDriver == "sqlite" {
+			return nil, fmt.Errorf("open sqlite %s: %w (path must be writable; Docker: mount /data and chown uid 65532)", dsn, err)
+		}
 		return nil, err
 	}
 	return s, nil
@@ -142,6 +157,11 @@ func (s *SQLStore) migrate(ctx context.Context) error {
 			created_at INTEGER NOT NULL,
 			last_seen INTEGER NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS backend_flags (
+			name TEXT PRIMARY KEY,
+			disabled INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
 	}
 	for _, q := range stmts {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -173,12 +193,50 @@ func HashAnon(ip, ua string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// HashSessionIP is IP-only glue for header-less media (images, streams).
+// Distinct from HashAnon(ip, ua). Written on login and token-bearing requests.
+func HashSessionIP(ip string) string {
+	return HashAnon(ip, "")
+}
+
+func sqliteDSN(dsn string) string {
+	if strings.Contains(dsn, "_pragma=") {
+		return dsn
+	}
+	sep := "?"
+	if strings.Contains(dsn, "?") {
+		sep = "&"
+	}
+	return dsn + sep + "_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)"
+}
+
+func configureSQLite(db *sql.DB) error {
+	// One connection: Go's pool plus SQLite writers otherwise yield SQLITE_BUSY
+	// under the post-login image storm (every request looks up + bind/touch).
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxLifetime(0)
+	for _, q := range []string{
+		`PRAGMA busy_timeout=5000`,
+		`PRAGMA journal_mode=WAL`,
+		`PRAGMA synchronous=NORMAL`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			return fmt.Errorf("sqlite %s: %w", q, err)
+		}
+	}
+	return nil
+}
+
 func (s *SQLStore) LookupToken(ctx context.Context, token string) (*TokenRow, error) {
 	if token == "" {
 		return nil, nil
 	}
 	h := HashToken(token)
-	row := s.scanToken(ctx, `SELECT token_hash, backend, user_id, username, device_id, client, device, version, session_id, created_at, last_seen, last_method, last_path, last_status FROM token_bindings WHERE token_hash = `+s.placeholder(1), h)
+	row, err := s.scanToken(ctx, `SELECT token_hash, backend, user_id, username, device_id, client, device, version, session_id, created_at, last_seen, last_method, last_path, last_status FROM token_bindings WHERE token_hash = `+s.placeholder(1), h)
+	if err != nil {
+		return nil, err
+	}
 	if row == nil {
 		return nil, nil
 	}
@@ -189,7 +247,7 @@ func (s *SQLStore) LookupToken(ctx context.Context, token string) (*TokenRow, er
 	return row, nil
 }
 
-func (s *SQLStore) scanToken(ctx context.Context, q string, args ...any) *TokenRow {
+func (s *SQLStore) scanToken(ctx context.Context, q string, args ...any) (*TokenRow, error) {
 	var (
 		r          TokenRow
 		userID     sql.NullString
@@ -209,8 +267,11 @@ func (s *SQLStore) scanToken(ctx context.Context, q string, args ...any) *TokenR
 		&r.TokenHash, &r.Backend, &userID, &username, &deviceID, &client, &device, &version, &sessionID,
 		&created, &seen, &lastMethod, &lastPath, &lastStatus,
 	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	r.UserID = userID.String
 	r.Username = username.String
@@ -224,7 +285,7 @@ func (s *SQLStore) scanToken(ctx context.Context, q string, args ...any) *TokenR
 	r.LastMethod = lastMethod.String
 	r.LastPath = lastPath.String
 	r.LastStatus = int(lastStatus.Int64)
-	return &r
+	return &r, nil
 }
 
 func (s *SQLStore) LookupDevice(ctx context.Context, deviceID string) (*SimpleBinding, error) {
@@ -447,6 +508,46 @@ func (s *SQLStore) CountsByBackend(ctx context.Context) (map[string]Counts, erro
 		return nil, err
 	}
 	return out, nil
+}
+
+func (s *SQLStore) ListBackendFlags(ctx context.Context) (map[string]bool, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT name, disabled FROM backend_flags`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var name string
+		var disabled int
+		if err := rows.Scan(&name, &disabled); err != nil {
+			return nil, err
+		}
+		out[name] = disabled != 0
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLStore) SetBackendDisabled(ctx context.Context, name string, disabled bool) error {
+	if name == "" {
+		return nil
+	}
+	flag := 0
+	if disabled {
+		flag = 1
+	}
+	q := `INSERT INTO backend_flags (name, disabled, updated_at) VALUES (` + joinPH(s, 3) + `)
+		ON CONFLICT (name) DO UPDATE SET disabled=excluded.disabled, updated_at=excluded.updated_at`
+	_, err := s.db.ExecContext(ctx, q, name, flag, time.Now().Unix())
+	return err
+}
+
+func (s *SQLStore) ClearBackendFlag(ctx context.Context, name string) error {
+	if name == "" {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `DELETE FROM backend_flags WHERE name=`+s.placeholder(1), name)
+	return err
 }
 
 func (s *SQLStore) Ping(ctx context.Context) error {

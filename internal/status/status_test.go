@@ -42,7 +42,7 @@ func TestUsersScopedByBackendAndRedacted(t *testing.T) {
 	}
 	mon.SetState("server-a", health.StateHealthy)
 	mon.SetState("server-b", health.StateHealthy)
-	h := New(cfg, st, mon, router.New(cfg, st, mon)).Handler()
+	h := New(cfg, st, mon, router.New(cfg, st, mon), nil, nil, nil).Handler()
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/hap/users/u1", nil))

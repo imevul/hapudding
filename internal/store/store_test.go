@@ -5,9 +5,73 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+func TestSQLiteWALAndBusyTimeout(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal.db")
+	st, err := Open("sqlite", path, time.Hour, time.Hour, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	var mode string
+	if err := st.db.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.EqualFold(mode, "wal") {
+		t.Fatalf("journal_mode=%s", mode)
+	}
+	var busy int
+	if err := st.db.QueryRow(`PRAGMA busy_timeout`).Scan(&busy); err != nil {
+		t.Fatal(err)
+	}
+	if busy < 5000 {
+		t.Fatalf("busy_timeout=%d", busy)
+	}
+}
+
+func TestSQLiteConcurrentBindLookup(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "conc.db")
+	st, err := Open("sqlite", path, time.Hour, time.Hour, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	if err := st.BindToken(ctx, "tok", "server-a", TokenRow{UserID: "u1"}); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	errCh := make(chan error, 32)
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if err := st.BindDevice(ctx, "dev", "server-a", ""); err != nil {
+				errCh <- err
+				return
+			}
+			row, err := st.LookupToken(ctx, "tok")
+			if err != nil || row == nil {
+				errCh <- err
+				return
+			}
+			_ = st.TouchToken(ctx, "tok", "GET", "/Items/x/Images/Primary", 200)
+			_ = i
+		}(i)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("concurrent store: %v", err)
+		}
+	}
+}
 
 func TestSQLiteBindLookupDeleteAndTTL(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "affinity.db")
@@ -157,5 +221,28 @@ func runStoreContract(t *testing.T, st Store) {
 	}
 	if counts["server-a"].Anons != 1 {
 		t.Fatalf("counts=%v", counts)
+	}
+}
+
+func TestBackendFlagsOverlay(t *testing.T) {
+	st, err := Open("sqlite", filepath.Join(t.TempDir(), "flags.db"), time.Hour, time.Hour, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	if err := st.SetBackendDisabled(ctx, "server-a", true); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.ListBackendFlags(ctx)
+	if err != nil || !got["server-a"] {
+		t.Fatalf("%v %v", got, err)
+	}
+	if err := st.ClearBackendFlag(ctx, "server-a"); err != nil {
+		t.Fatal(err)
+	}
+	got, err = st.ListBackendFlags(ctx)
+	if err != nil || got["server-a"] {
+		t.Fatalf("cleared %v %v", got, err)
 	}
 }

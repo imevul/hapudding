@@ -11,11 +11,15 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      bash curl vim-tiny iproute2 iputils-ping netcat-openbsd dnsutils ca-certificates \
+      bash curl vim-tiny iproute2 iputils-ping netcat-openbsd dnsutils ca-certificates util-linux \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd -l --system --uid 65532 --create-home --home-dir /home/hap --shell /usr/sbin/nologin hap
+    && useradd -l --system --uid 65532 --create-home --home-dir /home/hap --shell /usr/sbin/nologin hap \
+    && mkdir -p /data \
+    && chown hap:hap /data
 COPY --from=build /out/hapudding /usr/local/bin/hapudding
 COPY --from=build /out/hap /usr/local/bin/hap
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod 0755 /usr/local/bin/docker-entrypoint.sh
 EXPOSE 8096 9100
 USER hap
-ENTRYPOINT ["hapudding"]
+ENTRYPOINT ["docker-entrypoint.sh"]

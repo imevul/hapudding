@@ -30,6 +30,8 @@
 | P1-2 | SQLite and Postgres store (token/device/anon, user debug fields) | [X] |
 | P1-3 | Lookup order and policies `force_reauth`, `fail_closed`, `pin_unhealthy` | [X] |
 | P1-4 | Client gray-list (Infuse default, `fail_closed`) + Infuse hop tweaks | [X] |
+| P1-5 | SQLite WAL, busy timeout, single writer; store errors fail closed | [X] |
+| P1-6 | Postgres is the default affinity store (SQLite still supported) | [X] |
 
 ## P2 - Proxy
 
@@ -38,6 +40,12 @@
 | P2-1 | Streaming reverse proxy + WebSocket | [X] |
 | P2-2 | Login `AccessToken` peek; logout drops token row only | [X] |
 | P2-3 | Honest backend vs HAP errors; no ID rewrite | [X] |
+| P2-4 | Header-less media/images follow the session (cookie + IP glue) | [X] |
+| P2-5 | Hop ResponseHeaderTimeout / idle / dial timeouts; request-start log | [X] |
+| P2-6 | Accept `Expect: 100-continue` before the hop (Delfin/libsoup) | [X] |
+| P2-7 | Login failover on hop timeout or 401 (DeviceId pin cannot trap auth) | [X] |
+| P2-8 | Optional per-backend in-memory image cache (off by default) | [X] |
+| P2-9 | `performance` block: image cache on by default, library JSON cache, coalesce, auth_timeout; optional warm login + library concurrency | [X] |
 
 ## P3 - Health
 
@@ -45,6 +53,7 @@
 | --- | --- | --- |
 | P3-1 | Reachability, public info, `/health`, passive auth-plane, optional probe | [X] |
 | P3-2 | Status bind + Prometheus; `/hap/users` | [X] |
+| P3-3 | Operator backend disable (YAML + store overlay, `POST /hap/backends/{name}/…`, `make backends*`) | [X] |
 
 ## Future
 

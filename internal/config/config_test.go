@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestRejectReservedHopHeaders(t *testing.T) {
@@ -39,6 +40,8 @@ backends:
 	}
 	t.Setenv("HAP_LISTEN", ":9000")
 	t.Setenv("HAP_AFFINITY_POLICY", "fail_closed")
+	t.Setenv("HAP_STORE", "")
+	t.Setenv("HAP_DATABASE_URL", "")
 	c, err := Load(p)
 	if err != nil {
 		t.Fatal(err)
@@ -46,8 +49,11 @@ backends:
 	if c.Listen != ":9000" || c.Affinity.Policy != "fail_closed" {
 		t.Fatalf("listen=%q policy=%q", c.Listen, c.Affinity.Policy)
 	}
-	if c.Affinity.Store != "sqlite" {
+	if c.Affinity.Store != "postgres" {
 		t.Fatalf("store=%q", c.Affinity.Store)
+	}
+	if c.Affinity.Postgres.URL != "postgres://hap:hap@localhost:5432/hap?sslmode=disable" {
+		t.Fatalf("postgres url=%q", c.Affinity.Postgres.URL)
 	}
 	if c.Affinity.Graylist.Policy != "fail_closed" {
 		t.Fatalf("graylist policy=%q", c.Affinity.Graylist.Policy)
@@ -57,6 +63,29 @@ backends:
 	}
 	if !c.Affinity.Graylist.MatchesClient("Infuse 8.1") || !c.Affinity.Graylist.MatchesPath("/InfuseSync/Checkpoint/x") {
 		t.Fatal("default Infuse matchers")
+	}
+}
+
+func TestExplicitSQLiteDoesNotRequirePostgresURL(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "hap.yaml")
+	if err := os.WriteFile(p, []byte(`
+backends:
+  - name: server-a
+    url: http://127.0.0.1:8096
+affinity:
+  store: sqlite
+  sqlite:
+    path: ./data/affinity.db
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Affinity.Store != "sqlite" {
+		t.Fatalf("store=%q", c.Affinity.Store)
 	}
 }
 
@@ -111,6 +140,129 @@ affinity:
 	}
 	if c.Affinity.Graylist.MatchesClient("Infuse") {
 		t.Fatal("Infuse should not match when not in clients")
+	}
+}
+
+func TestPerformanceDefaultsOnAfterLoad(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "hap.yaml")
+	if err := os.WriteFile(p, []byte(`
+backends:
+  - name: server-a
+    url: http://127.0.0.1:8096
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.Performance.CacheEnabled() || !c.Performance.LibraryEnabled() || !c.Performance.CoalesceEnabled() {
+		t.Fatal("cache/library/coalesce must default on after Load")
+	}
+	if c.Performance.WarmLoginEnabled() || c.Performance.LibraryConcurrencyEnabled() {
+		t.Fatal("warm_login and library_concurrency must default off")
+	}
+	if c.Performance.AuthTimeout != 60*time.Second {
+		t.Fatalf("auth_timeout=%s", c.Performance.AuthTimeout)
+	}
+	if c.Performance.Cache.MaxBytes != 256<<20 || c.Performance.Cache.MaxObject != 2<<20 {
+		t.Fatalf("image defaults bytes=%d object=%d", c.Performance.Cache.MaxBytes, c.Performance.Cache.MaxObject)
+	}
+	if c.Performance.Library.TTL != 30*time.Second || c.Performance.Library.MaxBytes != 64<<20 {
+		t.Fatalf("library ttl=%s bytes=%d", c.Performance.Library.TTL, c.Performance.Library.MaxBytes)
+	}
+	if c.Backends[0].Disabled {
+		t.Fatal("backend disabled must default false")
+	}
+}
+
+func TestPerformanceExplicitFalseSticks(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "hap.yaml")
+	if err := os.WriteFile(p, []byte(`
+backends:
+  - name: server-a
+    url: http://127.0.0.1:8096
+performance:
+  cache:
+    enabled: false
+  library:
+    enabled: false
+  coalesce:
+    enabled: false
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Performance.CacheEnabled() || c.Performance.LibraryEnabled() || c.Performance.CoalesceEnabled() {
+		t.Fatal("explicit false must stick")
+	}
+}
+
+func TestCacheEnabledEnvAndValidation(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "hap.yaml")
+	if err := os.WriteFile(p, []byte(`
+backends:
+  - name: server-a
+    url: http://127.0.0.1:8096
+performance:
+  cache:
+    enabled: false
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HAP_CACHE_ENABLED", "true")
+	t.Setenv("HAP_AUTH_TIMEOUT", "90s")
+	c, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.Performance.CacheEnabled() {
+		t.Fatal("HAP_CACHE_ENABLED should enable cache")
+	}
+	if c.Performance.AuthTimeout != 90*time.Second {
+		t.Fatalf("auth_timeout=%s", c.Performance.AuthTimeout)
+	}
+
+	p2 := filepath.Join(dir, "bad.yaml")
+	if err := os.WriteFile(p2, []byte(`
+backends:
+  - name: server-a
+    url: http://127.0.0.1:8096
+performance:
+  cache:
+    enabled: true
+    max_bytes: 100
+    max_object: 200
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HAP_CACHE_ENABLED", "")
+	t.Setenv("HAP_AUTH_TIMEOUT", "")
+	if _, err := Load(p2); err == nil {
+		t.Fatal("expected max_object > max_bytes to fail")
+	}
+
+	p3 := filepath.Join(dir, "bad-lib.yaml")
+	if err := os.WriteFile(p3, []byte(`
+backends:
+  - name: server-a
+    url: http://127.0.0.1:8096
+performance:
+  library:
+    enabled: true
+    max_bytes: 100
+    max_object: 200
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(p3); err == nil {
+		t.Fatal("expected library max_object > max_bytes to fail")
 	}
 }
 

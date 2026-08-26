@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -90,7 +91,18 @@ func hopClient(b config.Backend) (*http.Client, error) {
 
 // HopTransport builds the per-backend TLS hop (keep-alives enabled).
 func HopTransport(b config.Backend) (*http.Transport, error) {
-	tr := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}}
+	timeout := b.Timeout
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
+	tr := &http.Transport{
+		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
+		DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: timeout,
+		IdleConnTimeout:       30 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
 	if b.TLS.ServerName != "" {
 		tr.TLSClientConfig.ServerName = b.TLS.ServerName
 	} else if b.Host != "" {

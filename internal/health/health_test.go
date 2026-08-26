@@ -65,6 +65,19 @@ func TestJellyfinHealthFailIsUnhealthy(t *testing.T) {
 	}
 }
 
+func TestHopTransportUsesBackendTimeout(t *testing.T) {
+	tr, err := HopTransport(config.Backend{Timeout: 2 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tr.ResponseHeaderTimeout != 2*time.Second {
+		t.Fatalf("ResponseHeaderTimeout=%s", tr.ResponseHeaderTimeout)
+	}
+	if tr.IdleConnTimeout != 30*time.Second || tr.TLSHandshakeTimeout != 10*time.Second {
+		t.Fatalf("idle=%s tls=%s", tr.IdleConnTimeout, tr.TLSHandshakeTimeout)
+	}
+}
+
 func testHealthCfg(url string) *config.Config {
 	t := true
 	return &config.Config{

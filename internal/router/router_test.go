@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -13,6 +14,18 @@ import (
 	"github.com/imevul/hapudding/internal/health"
 	"github.com/imevul/hapudding/internal/store"
 )
+
+type errStore struct {
+	store.Store
+	tokenErr error
+}
+
+func (e errStore) LookupToken(ctx context.Context, token string) (*store.TokenRow, error) {
+	if e.tokenErr != nil {
+		return nil, e.tokenErr
+	}
+	return e.Store.LookupToken(ctx, token)
+}
 
 func TestLookupOrderTokenWins(t *testing.T) {
 	rt, st, mon := testRouter(t, "fail_closed", 2)
@@ -198,6 +211,96 @@ func TestPoolSizeOneAndThree(t *testing.T) {
 	}
 }
 
+func TestLoginCandidatesPreferredFirst(t *testing.T) {
+	rt, _, mon := testRouter(t, "fail_closed", 2)
+	mon.SetState("server-a", health.StateHealthy)
+	mon.SetState("server-b", health.StateHealthy)
+	got := rt.LoginCandidates("server-a")
+	if len(got) != 2 || got[0].Name != "server-a" || got[1].Name != "server-b" {
+		t.Fatalf("%v", namesOf(got))
+	}
+	got = rt.LoginCandidates("server-b")
+	if len(got) != 2 || got[0].Name != "server-b" || got[1].Name != "server-a" {
+		t.Fatalf("%v", namesOf(got))
+	}
+}
+
+func TestStoreLookupErrorFailClosed(t *testing.T) {
+	rt, st, mon := testRouter(t, "fail_closed", 2)
+	mon.SetState("server-a", health.StateHealthy)
+	mon.SetState("server-b", health.StateHealthy)
+	ctx := context.Background()
+	if err := st.BindToken(ctx, "tok", "server-a", store.TokenRow{}); err != nil {
+		t.Fatal(err)
+	}
+	rt.st = errStore{Store: st, tokenErr: errors.New("database is locked (5) (SQLITE_BUSY)")}
+	req := httptest.NewRequest(http.MethodGet, "/Users/Me", nil)
+	req.Header.Set("Authorization", `MediaBrowser Token="tok"`)
+	d := rt.Decide(ctx, req, authheader.Parse(req))
+	if d.HAPError != "store_unavailable" || d.HAPStatus != http.StatusServiceUnavailable || d.Backend != nil {
+		t.Fatalf("store error must not pickNew, got %+v", d)
+	}
+}
+
+func TestImageFollowsCookieWhenSessionExists(t *testing.T) {
+	rt, st, mon := testRouter(t, "fail_closed", 2)
+	mon.SetState("server-a", health.StateHealthy)
+	mon.SetState("server-b", health.StateHealthy)
+	ctx := context.Background()
+	if err := st.BindToken(ctx, "tok", "server-a", store.TokenRow{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.BindAnon(ctx, store.HashAnon("10.0.0.9", "img-ua"), "server-b"); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/Items/abc/Images/Primary", nil)
+	req.RemoteAddr = "10.0.0.9:1"
+	req.Header.Set("User-Agent", "img-ua")
+	req.AddCookie(&http.Cookie{Name: "hap_backend", Value: "server-a"})
+	d := rt.Decide(ctx, req, authheader.Parse(req))
+	if name(d) != "server-a" {
+		t.Fatalf("header-less image must follow session cookie, got %s", name(d))
+	}
+}
+
+func TestImageCookieWithoutSessionIsNotSoleAffinity(t *testing.T) {
+	rt, st, mon := testRouter(t, "fail_closed", 2)
+	mon.SetState("server-a", health.StateHealthy)
+	mon.SetState("server-b", health.StateHealthy)
+	ctx := context.Background()
+	if err := st.BindAnon(ctx, store.HashAnon("10.0.0.9", "img-ua"), "server-a"); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/Items/abc/Images/Primary", nil)
+	req.RemoteAddr = "10.0.0.9:1"
+	req.Header.Set("User-Agent", "img-ua")
+	req.AddCookie(&http.Cookie{Name: "hap_backend", Value: "server-b"})
+	d := rt.Decide(ctx, req, authheader.Parse(req))
+	if name(d) != "server-a" {
+		t.Fatalf("cookie without a live session must not override anon, got %s", name(d))
+	}
+}
+
+func TestImageFollowsSessionIP(t *testing.T) {
+	rt, st, mon := testRouter(t, "fail_closed", 2)
+	mon.SetState("server-a", health.StateHealthy)
+	mon.SetState("server-b", health.StateHealthy)
+	ctx := context.Background()
+	if err := st.BindAnon(ctx, store.HashSessionIP("10.0.0.9"), "server-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.BindAnon(ctx, store.HashAnon("10.0.0.9", "other-ua"), "server-b"); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/Videos/1/stream", nil)
+	req.RemoteAddr = "10.0.0.9:1"
+	req.Header.Set("User-Agent", "other-ua")
+	d := rt.Decide(ctx, req, authheader.Parse(req))
+	if name(d) != "server-a" {
+		t.Fatalf("header-less media must follow IP session glue, got %s", name(d))
+	}
+}
+
 func TestCookieHintIsNotSoleAffinity(t *testing.T) {
 	rt, st, mon := testRouter(t, "fail_closed", 2)
 	mon.SetState("server-a", health.StateHealthy)
@@ -228,6 +331,51 @@ func TestDegradedBoundStillProxied(t *testing.T) {
 	d := rt.Decide(ctx, req, authheader.Parse(req))
 	if name(d) != "server-a" || d.HAPError != "" {
 		t.Fatalf("degraded bound must still proxy: %+v", d)
+	}
+}
+
+func TestYAMLDisabledSkippedAndBound503(t *testing.T) {
+	rt, st, mon := testRouter(t, "fail_closed", 2)
+	rt.cfg.Backends[0].Disabled = true
+	rt.flags.yaml[rt.cfg.Backends[0].Name] = true
+	mon.SetState("server-a", health.StateHealthy)
+	mon.SetState("server-b", health.StateHealthy)
+	ctx := context.Background()
+	req := httptest.NewRequest(http.MethodGet, "/Users/Me", nil)
+	d := rt.Decide(ctx, req, authheader.Parse(req))
+	if name(d) != "server-b" {
+		t.Fatalf("new client should skip disabled A, got %+v", d)
+	}
+	if err := st.BindToken(ctx, "tok-a", "server-a", store.TokenRow{}); err != nil {
+		t.Fatal(err)
+	}
+	req2 := httptest.NewRequest(http.MethodGet, "/Users/Me", nil)
+	req2.Header.Set("Authorization", `MediaBrowser Token="tok-a"`)
+	d2 := rt.Decide(ctx, req2, authheader.Parse(req2))
+	if d2.HAPError != "backend_disabled" || d2.HAPStatus != http.StatusServiceUnavailable {
+		t.Fatalf("bound disabled: %+v", d2)
+	}
+	if rt.Ready() && len(rt.eligible()) == 0 {
+		t.Fatal("ready")
+	}
+}
+
+func TestRuntimeDisableAndEnable(t *testing.T) {
+	rt, st, mon := testRouter(t, "fail_closed", 2)
+	mon.SetState("server-a", health.StateHealthy)
+	mon.SetState("server-b", health.StateHealthy)
+	ctx := context.Background()
+	if err := rt.Flags().SetRuntime(ctx, st, "server-a", true); err != nil {
+		t.Fatal(err)
+	}
+	if !rt.Flags().Disabled("server-a") || !rt.Flags().RuntimeDisabled("server-a") {
+		t.Fatal("runtime disable")
+	}
+	if err := rt.Flags().SetRuntime(ctx, st, "server-a", false); err != nil {
+		t.Fatal(err)
+	}
+	if rt.Flags().Disabled("server-a") {
+		t.Fatal("enable should clear overlay")
 	}
 }
 

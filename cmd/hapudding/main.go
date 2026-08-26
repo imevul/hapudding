@@ -63,7 +63,7 @@ func run() error {
 	}
 	rt := router.New(cfg, st, mon)
 	ph := proxy.New(cfg, rt, st, mon, log)
-	sh := status.New(cfg, st, mon, rt)
+	sh := status.New(cfg, st, mon, rt, ph.Cache(), ph.Library(), func() any { return ph.PerfSnapshot() })
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
