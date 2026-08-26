@@ -15,8 +15,11 @@ services:
       HAP_STORE: ${HAP_STORE:-postgres}
       HAP_SQLITE_PATH: /data/affinity.db
       HAP_DATABASE_URL: ${HAP_DATABASE_URL:-postgres://hap:hap@postgres:5432/hap?sslmode=disable}
+      HAP_CACHE_DISK_PATH: /data/imgcache
     volumes:
       - hap-data:/data
+      # Swap for a bind mount: ./data/imgcache:/data/imgcache
+      - hap-cache:/data/imgcache
       - ./configs/hap.yaml:/config/hap.yaml:ro
     command: ["--config", "/config/hap.yaml"]
     ports:
@@ -44,4 +47,5 @@ services:
 
 volumes:
   hap-data:
+  hap-cache:
   pg-data:

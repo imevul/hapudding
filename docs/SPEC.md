@@ -25,7 +25,7 @@ Separate listener (default `127.0.0.1:9100`). Not an HTML page.
 | `GET /hap/affinity` | Binding counts |
 | `GET /hap/users` | Debug user/session list |
 | `GET /hap/users/{userId}` | Debug dump; `?backend=` filters |
-| `GET /hap/cache` | Image cache stats (enabled, bytes, hits); not affinity |
+| `GET /hap/cache` | Image cache stats (memory + disk path/bytes/hits); not affinity |
 | `GET /hap/performance` | Image + library cache, coalesce, concurrency, `auth_timeout` |
 | `POST /hap/backends/{name}/disable` | Runtime-park a backend (store overlay; status bind only) |
 | `POST /hap/backends/{name}/enable` | Clear runtime overlay (`409` if YAML `disabled: true`) |

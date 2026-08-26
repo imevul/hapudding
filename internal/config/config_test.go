@@ -169,11 +169,17 @@ backends:
 	if c.Performance.Cache.MaxBytes != 256<<20 || c.Performance.Cache.MaxObject != 2<<20 {
 		t.Fatalf("image defaults bytes=%d object=%d", c.Performance.Cache.MaxBytes, c.Performance.Cache.MaxObject)
 	}
-	if c.Performance.Library.TTL != 30*time.Second || c.Performance.Library.MaxBytes != 64<<20 {
+	if c.Performance.Library.TTL != 60*time.Second || c.Performance.Library.MaxBytes != 64<<20 {
 		t.Fatalf("library ttl=%s bytes=%d", c.Performance.Library.TTL, c.Performance.Library.MaxBytes)
 	}
 	if c.Backends[0].Disabled {
 		t.Fatal("backend disabled must default false")
+	}
+	if !c.Performance.CacheDiskEnabled() || c.Performance.CacheDiskPath() != "./data/imgcache" {
+		t.Fatalf("disk default enabled=%v path=%q", c.Performance.CacheDiskEnabled(), c.Performance.CacheDiskPath())
+	}
+	if c.Performance.Cache.Disk.MaxBytes != 1<<30 {
+		t.Fatalf("disk max_bytes=%d", c.Performance.Cache.Disk.MaxBytes)
 	}
 }
 
@@ -187,6 +193,8 @@ backends:
 performance:
   cache:
     enabled: false
+    disk:
+      enabled: false
   library:
     enabled: false
   coalesce:
@@ -198,8 +206,32 @@ performance:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Performance.CacheEnabled() || c.Performance.LibraryEnabled() || c.Performance.CoalesceEnabled() {
+	if c.Performance.CacheEnabled() || c.Performance.LibraryEnabled() || c.Performance.CoalesceEnabled() || c.Performance.CacheDiskEnabled() {
 		t.Fatal("explicit false must stick")
+	}
+}
+
+func TestCacheDiskExplicitFalseSticks(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "hap.yaml")
+	if err := os.WriteFile(p, []byte(`
+backends:
+  - name: server-a
+    url: http://127.0.0.1:8096
+performance:
+  cache:
+    enabled: true
+    disk:
+      enabled: false
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.Performance.CacheEnabled() || c.Performance.CacheDiskEnabled() {
+		t.Fatal("disk false must stick while memory cache stays on")
 	}
 }
 

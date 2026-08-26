@@ -60,8 +60,11 @@ All optional proxy mitigations live under `performance`. Toggles that default on
 | `performance.cache.max_object` | | `2097152` (2MiB) |
 | `performance.cache.default_ttl` | | `15m` (untagged `Cache-Control: public`) |
 | `performance.cache.max_ttl` | | `24h` |
+| `performance.cache.disk.enabled` | `HAP_CACHE_DISK_ENABLED` | **true** (after `Load`; requires `cache.enabled`) |
+| `performance.cache.disk.path` | `HAP_CACHE_DISK_PATH` | `./data/imgcache` (Compose: `/data/imgcache`) |
+| `performance.cache.disk.max_bytes` | | `1073741824` (1GiB) |
 | `performance.library.enabled` | `HAP_LIBRARY_CACHE_ENABLED` | **true** |
-| `performance.library.ttl` | | `30s` |
+| `performance.library.ttl` | | `60s` |
 | `performance.library.max_bytes` | | `67108864` (64MiB) |
 | `performance.library.max_object` | | `4194304` (4MiB) |
 | `performance.coalesce.enabled` | `HAP_COALESCE_ENABLED` | **true** |
@@ -69,13 +72,13 @@ All optional proxy mitigations live under `performance`. Toggles that default on
 | `performance.library_concurrency.enabled` | `HAP_LIBRARY_CONCURRENCY_ENABLED` | `false` |
 | `performance.library_concurrency.max` | | `3` (total per backend, not per user; queue at cap) |
 
-**Image cache** is an in-memory LRU for `/Items/{id}/Images/…` only. Key is backend + path + query + `Accept`. User avatars, video/audio, and JSON listings are not stored there.
+**Image cache** is a two-tier store for `/Items/{id}/Images/…` only. Key is backend + path + query + `Accept`. Memory is a hot LRU (`max_bytes`); disk (`disk.enabled`) keeps the same objects across restart under `disk.path` (filenames are `sha256(key)`). Compose uses a named volume `hap-cache` at `/data/imgcache`; replace it with `./data/imgcache:/data/imgcache` to bind-mount. User avatars, video/audio, and JSON listings are not stored there. Library JSON stays memory-only.
 
 **Library cache** is token-keyed (`backend + sha256(token) + method + path + query`). Allowlist: `Views`, `Resume`, `NextUp`, `Latest`. Playback / UserData writes drop that token’s entries. Never shared across users or backends.
 
 **Coalesce** shares one in-flight image or library GET among waiters. **Warm login** (off) prefetches Views/Resume/NextUp after a successful login into the library cache. **Library concurrency** (off) queues extra library hops per backend.
 
-`GET /hap/cache` on the status bind is image stats. `GET /hap/performance` includes images, library, coalesce, concurrency, and `auth_timeout`.
+`GET /hap/cache` on the status bind is image stats (memory plus disk `enabled`/`path`/`bytes`/`objects`). `GET /hap/performance` includes images, library, coalesce, concurrency, and `auth_timeout`. Prometheus `hap_cache_requests_total` uses `result=hit|miss|store|evict|disk_hit|disk_store|disk_evict`; gauges `hap_cache_disk_bytes` and `hap_cache_disk_objects` sit beside the memory gauges.
 
 Top-level `cache:` is ignored (moved under `performance`).
 

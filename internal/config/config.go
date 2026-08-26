@@ -40,6 +40,13 @@ type Cache struct {
 	MaxObject  int64         `yaml:"max_object"`
 	DefaultTTL time.Duration `yaml:"default_ttl"`
 	MaxTTL     time.Duration `yaml:"max_ttl"`
+	Disk       CacheDisk     `yaml:"disk"`
+}
+
+type CacheDisk struct {
+	Enabled  *bool  `yaml:"enabled"`
+	Path     string `yaml:"path"`
+	MaxBytes int64  `yaml:"max_bytes"`
 }
 
 type LibraryCache struct {
@@ -220,12 +227,22 @@ func applyDefaults(c *Config) {
 	if c.Performance.Cache.MaxTTL == 0 {
 		c.Performance.Cache.MaxTTL = 24 * time.Hour
 	}
+	if c.Performance.Cache.Disk.Enabled == nil {
+		t := true
+		c.Performance.Cache.Disk.Enabled = &t
+	}
+	if c.Performance.Cache.Disk.Path == "" {
+		c.Performance.Cache.Disk.Path = "./data/imgcache"
+	}
+	if c.Performance.Cache.Disk.MaxBytes == 0 {
+		c.Performance.Cache.Disk.MaxBytes = 1 << 30
+	}
 	if c.Performance.Library.Enabled == nil {
 		t := true
 		c.Performance.Library.Enabled = &t
 	}
 	if c.Performance.Library.TTL == 0 {
-		c.Performance.Library.TTL = 30 * time.Second
+		c.Performance.Library.TTL = 60 * time.Second
 	}
 	if c.Performance.Library.MaxBytes == 0 {
 		c.Performance.Library.MaxBytes = 64 << 20
@@ -278,6 +295,13 @@ func applyEnv(c *Config) {
 	if v := os.Getenv("HAP_CACHE_ENABLED"); v != "" {
 		t := envBool(v)
 		c.Performance.Cache.Enabled = &t
+	}
+	if v := os.Getenv("HAP_CACHE_DISK_ENABLED"); v != "" {
+		t := envBool(v)
+		c.Performance.Cache.Disk.Enabled = &t
+	}
+	if v := os.Getenv("HAP_CACHE_DISK_PATH"); v != "" {
+		c.Performance.Cache.Disk.Path = v
 	}
 	if v := os.Getenv("HAP_LIBRARY_CACHE_ENABLED"); v != "" {
 		t := envBool(v)
@@ -369,6 +393,17 @@ func validate(c *Config) error {
 	if c.Performance.Cache.MaxObject > c.Performance.Cache.MaxBytes {
 		return fmt.Errorf("performance.cache.max_object must be <= performance.cache.max_bytes")
 	}
+	if c.Performance.CacheDiskEnabled() {
+		if c.Performance.Cache.Disk.Path == "" {
+			return fmt.Errorf("performance.cache.disk.path is required when disk is enabled")
+		}
+		if c.Performance.Cache.Disk.MaxBytes <= 0 {
+			return fmt.Errorf("performance.cache.disk.max_bytes must be > 0 when disk is enabled")
+		}
+		if c.Performance.Cache.MaxObject > c.Performance.Cache.Disk.MaxBytes {
+			return fmt.Errorf("performance.cache.max_object must be <= performance.cache.disk.max_bytes")
+		}
+	}
 	if c.Performance.LibraryEnabled() && c.Performance.Library.MaxBytes <= 0 {
 		return fmt.Errorf("performance.library.max_bytes must be > 0 when enabled")
 	}
@@ -398,6 +433,14 @@ func validate(c *Config) error {
 
 func (p Performance) CacheEnabled() bool {
 	return p.Cache.Enabled != nil && *p.Cache.Enabled
+}
+
+func (p Performance) CacheDiskEnabled() bool {
+	return p.CacheEnabled() && p.Cache.Disk.Enabled != nil && *p.Cache.Disk.Enabled
+}
+
+func (p Performance) CacheDiskPath() string {
+	return p.Cache.Disk.Path
 }
 
 func (p Performance) LibraryEnabled() bool {

@@ -33,9 +33,13 @@ performance:
     max_object: 2097152
     default_ttl: 15m
     max_ttl: 24h
+    disk:
+      enabled: true
+      path: ./data/imgcache
+      max_bytes: 1073741824
   library:
     enabled: true
-    ttl: 30s
+    ttl: 60s
     max_bytes: 67108864
     max_object: 4194304
   coalesce:

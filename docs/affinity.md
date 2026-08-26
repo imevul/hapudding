@@ -56,7 +56,7 @@ Gray-listed hops also disable upstream keep-alive and flush immediately. See [cl
 
 ## Image cache
 
-Optional (`performance.cache.enabled`, on by default after `Load`). Not an affinity source. After a backend is chosen, HAP may reuse a prior `200` image for that **same backend** + path + query + `Accept`. It does not share posters across backends and does not cache `/Users/…/Images`.
+Optional (`performance.cache.enabled`, on by default after `Load`). Not an affinity source. After a backend is chosen, HAP may reuse a prior `200` image for that **same backend** + path + query + `Accept`. Memory is the hot LRU; `performance.cache.disk` (on by default) persists the same key on disk so a restart does not refetch. It does not share posters across backends and does not cache `/Users/…/Images`.
 
 ## Library JSON cache
 

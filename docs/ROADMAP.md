@@ -46,6 +46,7 @@
 | P2-7 | Login failover on hop timeout or 401 (DeviceId pin cannot trap auth) | [X] |
 | P2-8 | Optional per-backend in-memory image cache (off by default) | [X] |
 | P2-9 | `performance` block: image cache on by default, library JSON cache, coalesce, auth_timeout; optional warm login + library concurrency | [X] |
+| P2-10 | Disk-backed image cache (memory hot LRU + optional disk, Compose `hap-cache` volume) | [X] |
 
 ## P3 - Health
 

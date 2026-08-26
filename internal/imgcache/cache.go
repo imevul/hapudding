@@ -26,6 +26,14 @@ var (
 		Name: "hap_cache_objects",
 		Help: "Current image cache object count",
 	})
+	diskByteGauge = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "hap_cache_disk_bytes",
+		Help: "Current image disk cache payload bytes",
+	})
+	diskObjGauge = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "hap_cache_disk_objects",
+		Help: "Current image disk cache object count",
+	})
 )
 
 // Entry is a stored image response (no Set-Cookie).
@@ -44,26 +52,44 @@ type Entry struct {
 
 // Stats is a snapshot for /hap/cache.
 type Stats struct {
-	Enabled  bool  `json:"enabled"`
-	Bytes    int64 `json:"bytes"`
-	Objects  int   `json:"objects"`
-	Hits     int64 `json:"hits"`
-	Misses   int64 `json:"misses"`
-	Stores   int64 `json:"stores"`
-	Evicts   int64 `json:"evicts"`
-	MaxBytes int64 `json:"maxBytes"`
+	Enabled  bool      `json:"enabled"`
+	Bytes    int64     `json:"bytes"`
+	Objects  int       `json:"objects"`
+	Hits     int64     `json:"hits"`
+	Misses   int64     `json:"misses"`
+	Stores   int64     `json:"stores"`
+	Evicts   int64     `json:"evicts"`
+	MaxBytes int64     `json:"maxBytes"`
+	Disk     DiskStats `json:"disk"`
+}
+
+type DiskStats struct {
+	Enabled  bool   `json:"enabled"`
+	Path     string `json:"path,omitempty"`
+	Bytes    int64  `json:"bytes"`
+	Objects  int    `json:"objects"`
+	Hits     int64  `json:"hits"`
+	Stores   int64  `json:"stores"`
+	Evicts   int64  `json:"evicts"`
+	MaxBytes int64  `json:"maxBytes"`
 }
 
 type Cache struct {
-	cfg config.Cache
-	mu  sync.Mutex
-	ll  *list.List
-	idx map[string]*list.Element
-	n   int64
-	hit int64
-	mis int64
-	put int64
-	ev  int64
+	cfg     config.Cache
+	mu      sync.Mutex
+	ll      *list.List
+	idx     map[string]*list.Element
+	n       int64
+	hit     int64
+	mis     int64
+	put     int64
+	ev      int64
+	diskLL  *list.List
+	diskIdx map[string]*list.Element
+	diskN   int64
+	dhit    int64
+	dput    int64
+	dev     int64
 }
 
 type item struct {
@@ -72,11 +98,15 @@ type item struct {
 }
 
 func New(cfg config.Cache) *Cache {
-	return &Cache{
-		cfg: cfg,
-		ll:  list.New(),
-		idx: map[string]*list.Element{},
+	c := &Cache{
+		cfg:     cfg,
+		ll:      list.New(),
+		idx:     map[string]*list.Element{},
+		diskLL:  list.New(),
+		diskIdx: map[string]*list.Element{},
 	}
+	c.loadDisk()
+	return c
 }
 
 func Key(backend, path, rawQuery, accept string) string {
@@ -88,27 +118,30 @@ func (c *Cache) Get(key string) *Entry {
 		return nil
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	el, ok := c.idx[key]
-	if !ok {
-		c.mis++
-		backend, _, _ := strings.Cut(key, "\n")
-		reqCount.WithLabelValues(backend, "miss").Inc()
-		return nil
-	}
-	it := el.Value.(*item)
-	if !it.ent.ExpiresAt.IsZero() && time.Now().After(it.ent.ExpiresAt) {
+	if el, ok := c.idx[key]; ok {
+		it := el.Value.(*item)
+		if it.ent.ExpiresAt.IsZero() || !time.Now().After(it.ent.ExpiresAt) {
+			c.ll.MoveToFront(el)
+			it.ent.Hits++
+			c.hit++
+			reqCount.WithLabelValues(it.ent.Backend, "hit").Inc()
+			out := cloneEntry(it.ent)
+			c.mu.Unlock()
+			return out
+		}
 		c.removeLocked(el)
-		c.mis++
-		reqCount.WithLabelValues(it.ent.Backend, "miss").Inc()
 		c.observeLocked()
-		return nil
 	}
-	c.ll.MoveToFront(el)
-	it.ent.Hits++
-	c.hit++
-	reqCount.WithLabelValues(it.ent.Backend, "hit").Inc()
-	return cloneEntry(it.ent)
+	c.mu.Unlock()
+	if ent := c.getDisk(key); ent != nil {
+		return ent
+	}
+	c.mu.Lock()
+	c.mis++
+	backend, _, _ := strings.Cut(key, "\n")
+	reqCount.WithLabelValues(backend, "miss").Inc()
+	c.mu.Unlock()
+	return nil
 }
 
 func (c *Cache) Put(key string, ent *Entry) bool {
@@ -143,6 +176,7 @@ func (c *Cache) Put(key string, ent *Entry) bool {
 	c.put++
 	reqCount.WithLabelValues(ent.Backend, "store").Inc()
 	c.observeLocked()
+	c.putDiskLocked(key, stored)
 	return true
 }
 
@@ -161,6 +195,16 @@ func (c *Cache) Stats() Stats {
 		Stores:   c.put,
 		Evicts:   c.ev,
 		MaxBytes: c.cfg.MaxBytes,
+		Disk: DiskStats{
+			Enabled:  c.diskEnabled(),
+			Path:     c.cfg.Disk.Path,
+			Bytes:    c.diskN,
+			Objects:  c.diskLL.Len(),
+			Hits:     c.dhit,
+			Stores:   c.dput,
+			Evicts:   c.dev,
+			MaxBytes: c.cfg.Disk.MaxBytes,
+		},
 	}
 }
 
@@ -190,6 +234,10 @@ func (c *Cache) removeLocked(el *list.Element) {
 func (c *Cache) observeLocked() {
 	byteGauge.Set(float64(c.n))
 	objGauge.Set(float64(c.ll.Len()))
+	diskByteGauge.Set(float64(c.diskN))
+	if c.diskLL != nil {
+		diskObjGauge.Set(float64(c.diskLL.Len()))
+	}
 }
 
 func cloneEntry(e *Entry) *Entry {
