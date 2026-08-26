@@ -67,6 +67,7 @@ type Store interface {
 	DeleteToken(ctx context.Context, token string) error
 	DeleteDevice(ctx context.Context, deviceID string) error
 	DeleteClient(ctx context.Context, token, deviceID string) error
+	DeletePinsByUsername(ctx context.Context, username string) (tokens, devices int, err error)
 	ListTokens(ctx context.Context) ([]TokenRow, error)
 	CountsByBackend(ctx context.Context) (map[string]Counts, error)
 	ListBackendFlags(ctx context.Context) (map[string]bool, error)
@@ -431,6 +432,61 @@ func (s *SQLStore) DeleteClient(ctx context.Context, token, deviceID string) err
 		return err
 	}
 	return s.DeleteDevice(ctx, deviceID)
+}
+
+func (s *SQLStore) DeletePinsByUsername(ctx context.Context, username string) (tokens, devices int, err error) {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return 0, 0, nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	ph := s.placeholder(1)
+	rows, err := tx.QueryContext(ctx, `SELECT device_id FROM token_bindings WHERE LOWER(username)=LOWER(`+ph+`)`, username)
+	if err != nil {
+		return 0, 0, err
+	}
+	var deviceIDs []string
+	for rows.Next() {
+		var d sql.NullString
+		if err = rows.Scan(&d); err != nil {
+			rows.Close()
+			return 0, 0, err
+		}
+		if d.String != "" {
+			deviceIDs = append(deviceIDs, d.String)
+		}
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return 0, 0, err
+	}
+	rows.Close()
+	res, err := tx.ExecContext(ctx, `DELETE FROM token_bindings WHERE LOWER(username)=LOWER(`+ph+`)`, username)
+	if err != nil {
+		return 0, 0, err
+	}
+	if n, e := res.RowsAffected(); e == nil {
+		tokens = int(n)
+	}
+	for _, id := range deviceIDs {
+		res, err = tx.ExecContext(ctx, `DELETE FROM device_bindings WHERE device_id=`+ph, id)
+		if err != nil {
+			return 0, 0, err
+		}
+		if n, e := res.RowsAffected(); e == nil {
+			devices += int(n)
+		}
+	}
+	err = tx.Commit()
+	return tokens, devices, err
 }
 
 func (s *SQLStore) ListTokens(ctx context.Context) ([]TokenRow, error) {

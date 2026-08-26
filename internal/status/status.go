@@ -37,6 +37,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /hap/backends", s.backends)
 	mux.HandleFunc("POST /hap/backends/{name}/disable", s.disableBackend)
 	mux.HandleFunc("POST /hap/backends/{name}/enable", s.enableBackend)
+	mux.HandleFunc("GET /hap/user-affinity", s.userAffinity)
+	mux.HandleFunc("POST /hap/users/by-name/{username}/unpin", s.unpinUser)
 	mux.HandleFunc("/hap/affinity", s.affinity)
 	mux.HandleFunc("/hap/cache", s.cacheStatus)
 	mux.HandleFunc("/hap/performance", s.performance)
@@ -132,6 +134,31 @@ func (s *Server) setBackendDisabled(w http.ResponseWriter, r *http.Request, disa
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"backends": s.backendViews()})
+}
+
+func (s *Server) userAffinity(w http.ResponseWriter, _ *http.Request) {
+	entries := []config.UserAffinityEntry{}
+	if s.cfg != nil {
+		entries = s.cfg.Affinity.UserAffinityEntries()
+		if entries == nil {
+			entries = []config.UserAffinityEntry{}
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"userAffinity": entries})
+}
+
+func (s *Server) unpinUser(w http.ResponseWriter, r *http.Request) {
+	username := strings.TrimSpace(r.PathValue("username"))
+	if username == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "username_required"})
+		return
+	}
+	tokens, devices, err := s.st.DeletePinsByUsername(r.Context(), username)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"username": username, "tokens": tokens, "devices": devices})
 }
 
 func (s *Server) affinity(w http.ResponseWriter, r *http.Request) {

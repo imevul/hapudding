@@ -19,4 +19,4 @@ Backend 4xx/5xx are **proxied as-is**. HAP synthesizes 503/401 only when it cann
 
 Disabled is stronger than unhealthy: HAP never hops there (including `pin_unhealthy` and login failover). Bound clients get `503 backend_disabled`. Health probes still run. `GET /hap/backends` includes `disabled`, `config_disabled`, `runtime_disabled`, and `ineligible_reason: "disabled"`.
 
-Host helpers: `make backends`, `make backend-disable NAME=…`, `make backend-enable NAME=…` (`STATUS` defaults to `http://127.0.0.1:9100`). Compose publishes status as `127.0.0.1:9100:9100` while the process listens on `0.0.0.0:9100` inside the container.
+Host helpers: `make backends`, `make backend-disable NAME=…`, `make backend-enable NAME=…`, `make user-affinity`, `make user-unpin USERNAME=…` (`STATUS` defaults to `http://127.0.0.1:9100`). Compose publishes status as `127.0.0.1:9100:9100` while the process listens on `0.0.0.0:9100` inside the container.

@@ -131,7 +131,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request, d router.Decisio
 		http.Error(w, "bad request body", http.StatusBadRequest)
 		return
 	}
-	cands := h.rt.LoginCandidates(d.Backend.Name)
+	cands := h.rt.LoginCandidates(h.loginPreferred(d, body))
 	if len(cands) == 0 {
 		writeHAP(w, http.StatusServiceUnavailable, "no_eligible_backend", "")
 		return
@@ -556,6 +556,30 @@ func acceptExpectContinue(r *http.Request) error {
 	r.ContentLength = int64(len(raw))
 	r.Header.Set("Content-Length", strconv.Itoa(len(raw)))
 	return nil
+}
+
+func (h *Handler) loginPreferred(d router.Decision, body []byte) string {
+	preferred := nameOf(d.Backend)
+	if d.Kind == store.KindToken || d.Kind == store.KindDevice {
+		return preferred
+	}
+	if h.cfg == nil {
+		return preferred
+	}
+	if want := h.cfg.Affinity.PreferredBackend(loginUsername(body)); want != "" {
+		return want
+	}
+	return preferred
+}
+
+func loginUsername(body []byte) string {
+	var v struct {
+		Username string `json:"Username"`
+	}
+	if json.Unmarshal(body, &v) != nil {
+		return ""
+	}
+	return strings.TrimSpace(v.Username)
 }
 
 func isLoginPath(method, path string) bool {

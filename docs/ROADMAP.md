@@ -32,6 +32,7 @@
 | P1-4 | Client gray-list (Infuse default, `fail_closed`) + Infuse hop tweaks | [X] |
 | P1-5 | SQLite WAL, busy timeout, single writer; store errors fail closed | [X] |
 | P1-6 | Postgres is the default affinity store (SQLite still supported) | [X] |
+| P1-7 | Config `user_affinity` login hint; `GET /hap/user-affinity`; `POST /hap/users/by-name/{username}/unpin`; `make user-affinity` / `user-unpin` | [X] |
 
 ## P2 - Proxy
 
@@ -48,7 +49,7 @@
 | P2-9 | `performance` block: image cache on by default, library JSON cache, coalesce, auth_timeout; optional warm login + library concurrency | [X] |
 | P2-10 | Disk-backed image cache (memory hot LRU + optional disk, Compose `hap-cache` volume) | [X] |
 | P2-11 | Keep Jellyfin Web on HAP’s origin (no bounce to `backends[].url`) | [ ] |
-| P2-12 | Investigate: My Media → Movies / TV shows fail through HAP after home-screen section changes | [ ] |
+| P2-12 | Investigate: My Media → Movies / TV shows fail through HAP after home-screen section changes | [X] |
 
 `P2-11` — today `GET /web` hops with `Host` = upstream host and does not rewrite `Location`, so a public HTTPS backend 302s the browser off HAP (`#/home` is the SPA after that). Goal: affinity-chosen server’s player stays on the HAP host; XHR, images, streams, `/socket` stay on HAP (caches apply). Not a merged library; no ID rewrite.
 
@@ -59,11 +60,7 @@
 - Watch HLS/DASH absolute segment URLs (bypass HAP). HAP-on-HTTP vs Jellyfin HTTPS-required. Same-backend pin for `/web` assets vs API if versions differ.
 - Docs: Jellyfin known-proxies / published URI when HAP is the web entry; `clients.md` Web note.
 
-`P2-12` — reported after changing which home sections are visible. Do not assume a 5xx: local Compose logs (2026-08-26) served `/Users/…/Items` as **200**, but `/Users/…/Views` hops were **5–39s** and two died `backend unreachable` / `context canceled` (client abort). Immediate retry then hit the **library cache**.
-
-- Suspects: stale **Views / Latest / Resume / NextUp** (TTL 60s) after a home-layout write — `DisplayPreferences` is **not** an invalidate trigger (and no POST of it appeared on HAP; settings may have been saved on the backend origin, see P2-11). Coalesce only merges identical method+path+query; differing Views queries all hop. Image burst at the same time as canceled Views.
-- Check: log `RawQuery` on Views/Items; whether Movies/TV `ParentId` listings 200-but-empty vs client spinner; `library_concurrency` (off in local YAML) vs parallel library hops; 404s on a couple of item Primary images.
-- Compare the same navigation on the backend directly vs HAP; disable `performance.library` / `coalesce` as a bisect.
+`P2-12` — not a HAP routing/cache bug. My Media tiles for Movies/TV show placeholders because the pinned backend returns **404** on those two collection folders’ `/Images/Primary` and `/Images/Backdrop` (~50ms). Collections/Anime Primaries are **200** on the same hop. Opening the library (`/Users/…/Items/{id}`) is **200**. Jellyfin Web’s “Failed to load media backdrop” is that Backdrop 404. Home `Views` / `Latest` can still take several seconds (upstream), which feels like a hang; the artwork miss is the 404s. Fix on the Jellyfin side: set library images for those folders (or accept the placeholder).
 
 ## P3 - Health
 

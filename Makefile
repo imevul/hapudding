@@ -11,7 +11,7 @@ LDFLAGS  := -s -w -X main.version=$(VERSION)
 
 STATUS ?= http://127.0.0.1:9100
 
-.PHONY: all help build install update check verify ci fmt fmt-check tidy tidy-check vet test test-race coverage run clean docker compose-up compose-postgres backends backend-disable backend-enable
+.PHONY: all help build install update check verify ci fmt fmt-check tidy tidy-check vet test test-race coverage run clean docker compose-up compose-postgres backends backend-disable backend-enable user-affinity user-unpin
 
 all: build
 
@@ -34,6 +34,8 @@ help:
 	@echo "  make backends                 — GET /hap/backends"
 	@echo "  make backend-disable NAME=…   — POST /hap/backends/NAME/disable"
 	@echo "  make backend-enable NAME=…    — POST /hap/backends/NAME/enable"
+	@echo "  make user-affinity            — GET /hap/user-affinity"
+	@echo "  make user-unpin USERNAME=…    — POST /hap/users/by-name/USERNAME/unpin"
 
 build:
 	@mkdir -p $(BIN_DIR)
@@ -118,3 +120,10 @@ backend-disable:
 backend-enable:
 	@test -n "$(NAME)" || { echo "NAME is required (make backend-enable NAME=server-a)"; exit 1; }
 	curl -sS -X POST $(STATUS)/hap/backends/$(NAME)/enable
+
+user-affinity:
+	curl -sS $(STATUS)/hap/user-affinity
+
+user-unpin:
+	@test -n "$(USERNAME)" || { echo "USERNAME is required (make user-unpin USERNAME=ada)"; exit 1; }
+	curl -sS -X POST $(STATUS)/hap/users/by-name/$(USERNAME)/unpin

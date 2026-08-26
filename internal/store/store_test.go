@@ -224,6 +224,40 @@ func runStoreContract(t *testing.T, st Store) {
 	}
 }
 
+func TestDeletePinsByUsername(t *testing.T) {
+	st, err := Open("sqlite", filepath.Join(t.TempDir(), "pins.db"), time.Hour, time.Hour, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	if err := st.BindToken(ctx, "tok-ada", "server-a", TokenRow{Username: "Ada", DeviceID: "dev-ada"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.BindDevice(ctx, "dev-ada", "server-a", "Infuse"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.BindToken(ctx, "tok-bob", "server-b", TokenRow{Username: "bob", DeviceID: "dev-bob"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.BindDevice(ctx, "dev-bob", "server-b", ""); err != nil {
+		t.Fatal(err)
+	}
+	tokens, devices, err := st.DeletePinsByUsername(ctx, "ada")
+	if err != nil || tokens != 1 || devices != 1 {
+		t.Fatalf("tokens=%d devices=%d err=%v", tokens, devices, err)
+	}
+	if row, _ := st.LookupToken(ctx, "tok-ada"); row != nil {
+		t.Fatal("ada token should be gone")
+	}
+	if row, _ := st.LookupDevice(ctx, "dev-ada"); row != nil {
+		t.Fatal("ada device should be gone")
+	}
+	if row, _ := st.LookupToken(ctx, "tok-bob"); row == nil {
+		t.Fatal("bob token must stay")
+	}
+}
+
 func TestBackendFlagsOverlay(t *testing.T) {
 	st, err := Open("sqlite", filepath.Join(t.TempDir(), "flags.db"), time.Hour, time.Hour, time.Hour)
 	if err != nil {

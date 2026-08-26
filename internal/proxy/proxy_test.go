@@ -171,6 +171,68 @@ func TestHeaderlessImageFollowsSessionBackend(t *testing.T) {
 	}
 }
 
+func TestLoginPrefersUserAffinityWhenUnbound(t *testing.T) {
+	var hitA, hitB int
+	a := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hitA++
+		http.Error(w, "nope", http.StatusUnauthorized)
+	}))
+	t.Cleanup(a.Close)
+	b := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hitB++
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"AccessToken": "issued-b",
+			"User":        map[string]string{"Id": "u-b", "Name": "ada"},
+		})
+	}))
+	t.Cleanup(b.Close)
+	h, st, mon := testProxy(t, "fail_closed", a, b)
+	h.cfg.Affinity.UserAffinity = config.UserAffinityList{{"ada": "server-b"}}
+	mon.SetState("server-a", health.StateHealthy)
+	mon.SetState("server-b", health.StateHealthy)
+	for i := 0; i < 3; i++ {
+		_ = st.BindToken(context.Background(), "load-"+string(rune('a'+i)), "server-b", store.TokenRow{})
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/Users/AuthenticateByName", strings.NewReader(`{"Username":"ada","Pw":"x"}`))
+	req.Header.Set("Authorization", `MediaBrowser Client="HAP-Test"`)
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || hitB != 1 || hitA != 0 {
+		t.Fatalf("want B first, code=%d A=%d B=%d body=%s", rec.Code, hitA, hitB, rec.Body.String())
+	}
+}
+
+func TestLoginUserAffinityDoesNotOverrideDevicePin(t *testing.T) {
+	var hitA, hitB int
+	a := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hitA++
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"AccessToken": "issued-a",
+			"User":        map[string]string{"Id": "u-a", "Name": "ada"},
+		})
+	}))
+	t.Cleanup(a.Close)
+	b := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hitB++
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(b.Close)
+	h, st, mon := testProxy(t, "fail_closed", a, b)
+	h.cfg.Affinity.UserAffinity = config.UserAffinityList{{"ada": "server-b"}}
+	mon.SetState("server-a", health.StateHealthy)
+	mon.SetState("server-b", health.StateHealthy)
+	if err := st.BindDevice(context.Background(), "dev-1", "server-a", ""); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/Users/AuthenticateByName", strings.NewReader(`{"Username":"ada","Pw":"x"}`))
+	req.Header.Set("Authorization", `MediaBrowser DeviceId="dev-1"`)
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || hitA != 1 || hitB != 0 {
+		t.Fatalf("device pin must win, code=%d A=%d B=%d", rec.Code, hitA, hitB)
+	}
+}
+
 func TestLoginFailsOverAfterTimeout(t *testing.T) {
 	dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	dead.Close()

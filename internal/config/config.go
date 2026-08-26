@@ -89,15 +89,53 @@ type TLS struct {
 }
 
 type Affinity struct {
-	Policy            string        `yaml:"policy"`
-	NewClientsRequire string        `yaml:"new_clients_require"`
-	Graylist          Graylist      `yaml:"graylist"`
-	Store             string        `yaml:"store"`
-	SQLite            SQLite        `yaml:"sqlite"`
-	Postgres          Postgres      `yaml:"postgres"`
-	TokenTTL          time.Duration `yaml:"token_ttl"`
-	DeviceTTL         time.Duration `yaml:"device_ttl"`
-	AnonTTL           time.Duration `yaml:"anon_ttl"`
+	Policy            string           `yaml:"policy"`
+	NewClientsRequire string           `yaml:"new_clients_require"`
+	Graylist          Graylist         `yaml:"graylist"`
+	Store             string           `yaml:"store"`
+	SQLite            SQLite           `yaml:"sqlite"`
+	Postgres          Postgres         `yaml:"postgres"`
+	TokenTTL          time.Duration    `yaml:"token_ttl"`
+	DeviceTTL         time.Duration    `yaml:"device_ttl"`
+	AnonTTL           time.Duration    `yaml:"anon_ttl"`
+	UserAffinity      UserAffinityList `yaml:"user_affinity"`
+}
+
+// UserAffinityList is a YAML list of single-key maps: `- username: backend`.
+type UserAffinityList []map[string]string
+
+func (a Affinity) PreferredBackend(username string) string {
+	u := strings.TrimSpace(username)
+	if u == "" {
+		return ""
+	}
+	for _, m := range a.UserAffinity {
+		for user, backend := range m {
+			if strings.EqualFold(strings.TrimSpace(user), u) {
+				return strings.TrimSpace(backend)
+			}
+		}
+	}
+	return ""
+}
+
+func (a Affinity) UserAffinityEntries() []UserAffinityEntry {
+	var out []UserAffinityEntry
+	for _, m := range a.UserAffinity {
+		for user, backend := range m {
+			user, backend = strings.TrimSpace(user), strings.TrimSpace(backend)
+			if user == "" {
+				continue
+			}
+			out = append(out, UserAffinityEntry{Username: user, Backend: backend})
+		}
+	}
+	return out
+}
+
+type UserAffinityEntry struct {
+	Username string `json:"username"`
+	Backend  string `json:"backend"`
 }
 
 // Graylist applies a different affinity policy to matching clients (Infuse by default).
@@ -412,6 +450,27 @@ func validate(c *Config) error {
 	}
 	if c.Performance.LibraryConcurrencyEnabled() && c.Performance.LibraryConcurrency.Max < 1 {
 		return fmt.Errorf("performance.library_concurrency.max must be >= 1 when enabled")
+	}
+	seenUsers := map[string]struct{}{}
+	for _, e := range c.Affinity.UserAffinityEntries() {
+		if e.Username == "" || e.Backend == "" {
+			return fmt.Errorf("affinity.user_affinity entries must be `- username: backend`")
+		}
+		uk := strings.ToLower(e.Username)
+		if _, ok := seenUsers[uk]; ok {
+			return fmt.Errorf("duplicate affinity.user_affinity username %q", e.Username)
+		}
+		seenUsers[uk] = struct{}{}
+		found := false
+		for _, b := range c.Backends {
+			if b.Name == e.Backend {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("affinity.user_affinity username %q refers to unknown backend %q", e.Username, e.Backend)
+		}
 	}
 	seen := map[string]struct{}{}
 	for _, b := range c.Backends {

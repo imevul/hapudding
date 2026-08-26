@@ -86,3 +86,58 @@ func TestUsersScopedByBackendAndRedacted(t *testing.T) {
 		t.Fatalf("%+v", one)
 	}
 }
+
+func TestUserAffinityAndUnpin(t *testing.T) {
+	cfg := &config.Config{
+		Affinity: config.Affinity{
+			Policy:            "fail_closed",
+			NewClientsRequire: "healthy",
+			Graylist:          config.Graylist{Policy: "fail_closed"},
+			UserAffinity:      config.UserAffinityList{{"ada": "server-b"}},
+		},
+		Backends: []config.Backend{
+			{Name: "server-a", URL: "http://127.0.0.1:1", Timeout: time.Second},
+			{Name: "server-b", URL: "http://127.0.0.1:2", Timeout: time.Second},
+		},
+	}
+	st, err := store.Open("sqlite", filepath.Join(t.TempDir(), "s.db"), time.Hour, time.Hour, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	ctx := context.Background()
+	if err := st.BindToken(ctx, "tok", "server-a", store.TokenRow{Username: "ada", DeviceID: "dev-ada"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.BindDevice(ctx, "dev-ada", "server-a", ""); err != nil {
+		t.Fatal(err)
+	}
+	mon, err := health.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mon.SetState("server-a", health.StateHealthy)
+	mon.SetState("server-b", health.StateHealthy)
+	h := New(cfg, st, mon, router.New(cfg, st, mon), nil, nil, nil).Handler()
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/hap/user-affinity", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"username":"ada"`) || !strings.Contains(rec.Body.String(), `"backend":"server-b"`) {
+		t.Fatalf("%d %s", rec.Code, rec.Body.String())
+	}
+
+	rec2 := httptest.NewRecorder()
+	h.ServeHTTP(rec2, httptest.NewRequest(http.MethodPost, "/hap/users/by-name/Ada/unpin", nil))
+	if rec2.Code != http.StatusOK || !strings.Contains(rec2.Body.String(), `"tokens":1`) {
+		t.Fatalf("unpin %d %s", rec2.Code, rec2.Body.String())
+	}
+	if row, _ := st.LookupToken(ctx, "tok"); row != nil {
+		t.Fatal("token should be gone")
+	}
+
+	rec3 := httptest.NewRecorder()
+	h.ServeHTTP(rec3, httptest.NewRequest(http.MethodPost, "/hap/users/by-name/%20/unpin", nil))
+	if rec3.Code != http.StatusBadRequest {
+		t.Fatalf("empty username %d %s", rec3.Code, rec3.Body.String())
+	}
+}

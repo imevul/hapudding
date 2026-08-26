@@ -14,6 +14,8 @@ A token issued by Server A is never sent to Server B. Store lookup errors fail c
 
 Password / Quick Connect login is the exception: if the chosen backend times out or returns 401, HAP retries other eligible backends with the same body (no existing token is forwarded). A 200 binds DeviceId and token to the server that issued them.
 
+`affinity.user_affinity` (`- username: backend`) is a **login hint**, not a pin. On `AuthenticateByName`, if there is no live token or DeviceId binding, HAP tries that user's preferred backend first among **eligible** backends. Token/device pins, operator disable, health eligibility, and fail-closed still win. Anon/cookie/least-loaded placement does not block the hint. `POST /hap/users/by-name/{username}/unpin` on the status bind clears that username's stored token pins and those tokens' DeviceId rows so the next login can take the hint (or least-loaded). See [config.md](config.md).
+
 The default store is **Postgres**. SQLite remains available and uses WAL, a 5s busy timeout, and a single writer connection so a home-page image burst does not lock the affinity DB. Switching drivers does not migrate bindings.
 
 ## Policies

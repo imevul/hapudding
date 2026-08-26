@@ -25,6 +25,9 @@ affinity:
   token_ttl: 720h
   device_ttl: 720h
   anon_ttl: 15m
+  # Prefer a backend on first password login only (does not override token/device pins).
+  # user_affinity:
+  #   - ada: server-a
 performance:
   auth_timeout: 60s
   cache:

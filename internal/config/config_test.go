@@ -143,6 +143,58 @@ affinity:
 	}
 }
 
+func TestUserAffinityYAMLAndValidation(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "hap.yaml")
+	if err := os.WriteFile(p, []byte(`
+backends:
+  - name: server-a
+    url: http://127.0.0.1:8096
+  - name: server-b
+    url: http://127.0.0.1:8097
+affinity:
+  user_affinity:
+    - ada: server-b
+    - Bob: server-a
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Affinity.PreferredBackend("ADA") != "server-b" || c.Affinity.PreferredBackend("bob") != "server-a" {
+		t.Fatalf("preferred %+v", c.Affinity.UserAffinityEntries())
+	}
+	if err := os.WriteFile(p, []byte(`
+backends:
+  - name: server-a
+    url: http://127.0.0.1:8096
+affinity:
+  user_affinity:
+    - ada: missing
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(p); err == nil {
+		t.Fatal("unknown backend must fail")
+	}
+	if err := os.WriteFile(p, []byte(`
+backends:
+  - name: server-a
+    url: http://127.0.0.1:8096
+affinity:
+  user_affinity:
+    - ada: server-a
+    - Ada: server-a
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(p); err == nil {
+		t.Fatal("duplicate username must fail")
+	}
+}
+
 func TestPerformanceDefaultsOnAfterLoad(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "hap.yaml")
