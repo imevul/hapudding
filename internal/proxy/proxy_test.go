@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -82,6 +83,44 @@ func TestExpectContinueLoginForwardsBodyWithoutExpect(t *testing.T) {
 	}
 	if gotExpect != "" {
 		t.Fatalf("Expect forwarded: %q", gotExpect)
+	}
+	if !strings.Contains(gotBody, `"Username":"ada"`) {
+		t.Fatalf("body=%q", gotBody)
+	}
+}
+
+func TestLoginHopStripsChunkedFraming(t *testing.T) {
+	var gotTE, gotCL, gotBody string
+	a := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotTE = r.Header.Get("Transfer-Encoding")
+		gotCL = r.Header.Get("Content-Length")
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"AccessToken": "issued-token",
+			"User":        map[string]string{"Id": "u-a", "Name": "ada"},
+		})
+	}))
+	t.Cleanup(a.Close)
+	h, _, mon := testProxy(t, "fail_closed", a)
+	mon.SetState("server-a", health.StateHealthy)
+	body := `{"Username":"ada","Pw":"x"}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/Users/AuthenticateByName", strings.NewReader(body))
+	req.Header.Set("Authorization", `MediaBrowser DeviceId="dev-1"`)
+	req.Header.Set("Transfer-Encoding", "chunked")
+	req.Header.Set("Content-Length", "99999")
+	req.ContentLength = -1
+	req.TransferEncoding = []string{"chunked"}
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("login %d %s", rec.Code, rec.Body.String())
+	}
+	if gotTE != "" {
+		t.Fatalf("Transfer-Encoding forwarded: %q", gotTE)
+	}
+	if gotCL != strconv.Itoa(len(body)) {
+		t.Fatalf("Content-Length=%q want %d", gotCL, len(body))
 	}
 	if !strings.Contains(gotBody, `"Username":"ada"`) {
 		t.Fatalf("body=%q", gotBody)
@@ -202,7 +241,38 @@ func TestLoginPrefersUserAffinityWhenUnbound(t *testing.T) {
 	}
 }
 
-func TestLoginUserAffinityDoesNotOverrideDevicePin(t *testing.T) {
+func TestLoginUserAffinityOverridesDevicePin(t *testing.T) {
+	var hitA, hitB int
+	a := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hitA++
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(a.Close)
+	b := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hitB++
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"AccessToken": "issued-b",
+			"User":        map[string]string{"Id": "u-b", "Name": "ada"},
+		})
+	}))
+	t.Cleanup(b.Close)
+	h, st, mon := testProxy(t, "fail_closed", a, b)
+	h.cfg.Affinity.UserAffinity = config.UserAffinityList{{"ada": "server-b"}}
+	mon.SetState("server-a", health.StateHealthy)
+	mon.SetState("server-b", health.StateHealthy)
+	if err := st.BindDevice(context.Background(), "dev-1", "server-a", ""); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/Users/AuthenticateByName", strings.NewReader(`{"Username":"ada","Pw":"x"}`))
+	req.Header.Set("Authorization", `MediaBrowser DeviceId="dev-1"`)
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || hitB != 1 || hitA != 0 {
+		t.Fatalf("user_affinity must beat leftover device pin, code=%d A=%d B=%d", rec.Code, hitA, hitB)
+	}
+}
+
+func TestLoginUserAffinityDoesNotOverrideTokenPin(t *testing.T) {
 	var hitA, hitB int
 	a := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hitA++
@@ -221,15 +291,24 @@ func TestLoginUserAffinityDoesNotOverrideDevicePin(t *testing.T) {
 	h.cfg.Affinity.UserAffinity = config.UserAffinityList{{"ada": "server-b"}}
 	mon.SetState("server-a", health.StateHealthy)
 	mon.SetState("server-b", health.StateHealthy)
-	if err := st.BindDevice(context.Background(), "dev-1", "server-a", ""); err != nil {
+	if err := st.BindToken(context.Background(), "tok-a", "server-a", store.TokenRow{Username: "ada"}); err != nil {
 		t.Fatal(err)
 	}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/Users/AuthenticateByName", strings.NewReader(`{"Username":"ada","Pw":"x"}`))
-	req.Header.Set("Authorization", `MediaBrowser DeviceId="dev-1"`)
+	req.Header.Set("Authorization", `MediaBrowser Token="tok-a", DeviceId="dev-1"`)
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK || hitA != 1 || hitB != 0 {
-		t.Fatalf("device pin must win, code=%d A=%d B=%d", rec.Code, hitA, hitB)
+		t.Fatalf("live token pin must win, code=%d A=%d B=%d", rec.Code, hitA, hitB)
+	}
+}
+
+func TestPathUserID(t *testing.T) {
+	if got := pathUserID("/Users/d132bb76-e134-48ab-bbdc-b55e542170bd/Items"); got != "d132bb76-e134-48ab-bbdc-b55e542170bd" {
+		t.Fatalf("got %q", got)
+	}
+	if pathUserID("/Users/AuthenticateByName") != "" || pathUserID("/Users/Me") != "" {
+		t.Fatal("non-guid users path")
 	}
 }
 

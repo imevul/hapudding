@@ -143,6 +143,16 @@ func TestDeviceClientStickyAndMigrate(t *testing.T) {
 	if err != nil || tok == nil || tok.Client != "Infuse" {
 		t.Fatalf("sticky token client %+v err=%v", tok, err)
 	}
+	if err := st.BindToken(ctx, "tok", "server-a", TokenRow{UserID: "u1", Username: "ada", DeviceID: "dev-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.BindToken(ctx, "tok", "server-a", TokenRow{}); err != nil {
+		t.Fatal(err)
+	}
+	tok, err = st.LookupToken(ctx, "tok")
+	if err != nil || tok == nil || tok.Username != "ada" || tok.UserID != "u1" || tok.DeviceID != "dev-1" {
+		t.Fatalf("sticky identity %+v err=%v", tok, err)
+	}
 }
 
 func TestPostgresStoreContract(t *testing.T) {
@@ -252,6 +262,40 @@ func TestDeletePinsByUsername(t *testing.T) {
 	}
 	if row, _ := st.LookupDevice(ctx, "dev-ada"); row != nil {
 		t.Fatal("ada device should be gone")
+	}
+	if row, _ := st.LookupToken(ctx, "tok-bob"); row == nil {
+		t.Fatal("bob token must stay")
+	}
+}
+
+func TestDeletePinsByUsernameUserIDAndOrphans(t *testing.T) {
+	st, err := Open("sqlite", filepath.Join(t.TempDir(), "pins2.db"), time.Hour, time.Hour, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	if err := st.BindToken(ctx, "tok-empty", "server-a", TokenRow{DeviceID: "dev-empty"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.BindDevice(ctx, "dev-empty", "server-a", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.BindDevice(ctx, "dev-other", "server-a", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.BindToken(ctx, "tok-bob", "server-b", TokenRow{Username: "bob", UserID: "u-bob"}); err != nil {
+		t.Fatal(err)
+	}
+	nTok, nDev, err := st.DeletePinsByUsername(ctx, "ada")
+	if err != nil || nTok != 1 || nDev != 2 {
+		t.Fatalf("wiped-identity fallback tokens=%d devices=%d err=%v", nTok, nDev, err)
+	}
+	if row, _ := st.LookupToken(ctx, "tok-empty"); row != nil {
+		t.Fatal("wiped-identity token should be gone")
+	}
+	if row, _ := st.LookupDevice(ctx, "dev-other"); row != nil {
+		t.Fatal("all devices on that backend should be gone")
 	}
 	if row, _ := st.LookupToken(ctx, "tok-bob"); row == nil {
 		t.Fatal("bob token must stay")

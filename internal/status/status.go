@@ -1,7 +1,9 @@
 package status
 
 import (
+	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -153,12 +155,68 @@ func (s *Server) unpinUser(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "username_required"})
 		return
 	}
-	tokens, devices, err := s.st.DeletePinsByUsername(r.Context(), username)
+	tokens, devices, err := s.st.DeletePinsByUsername(r.Context(), username, s.publicUserIDs(r.Context(), username)...)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"username": username, "tokens": tokens, "devices": devices})
+}
+
+func (s *Server) publicUserIDs(ctx context.Context, username string) []string {
+	if s.cfg == nil {
+		return nil
+	}
+	var ids []string
+	seen := map[string]struct{}{}
+	for _, b := range s.cfg.Backends {
+		id := publicUserID(ctx, b, username)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+func publicUserID(ctx context.Context, b config.Backend, username string) string {
+	tr, err := health.HopTransport(b)
+	if err != nil {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	c := &http.Client{Timeout: 3 * time.Second, Transport: tr}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(b.URL, "/")+"/Users/Public", nil)
+	if err != nil {
+		return ""
+	}
+	res, err := c.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, res.Body)
+		return ""
+	}
+	var users []struct {
+		Name string `json:"Name"`
+		ID   string `json:"Id"`
+	}
+	if json.NewDecoder(res.Body).Decode(&users) != nil {
+		return ""
+	}
+	for _, u := range users {
+		if strings.EqualFold(strings.TrimSpace(u.Name), username) {
+			return strings.TrimSpace(u.ID)
+		}
+	}
+	return ""
 }
 
 func (s *Server) affinity(w http.ResponseWriter, r *http.Request) {

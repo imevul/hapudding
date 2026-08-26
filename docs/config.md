@@ -45,7 +45,7 @@ Do not set hop-level `Authorization`. Clients already send Jellyfin's MediaBrows
 | `anon_ttl` | | `15m` |
 | `user_affinity` | | omitted | List of `- username: backend`. Prefer that backend on **unbound** password login only. Does not override token/device pins, eligibility, disable, or fail-closed. Usernames are unique (case-insensitive). |
 
-`GET /hap/user-affinity` on the status bind returns the configured list. `POST /hap/users/by-name/{username}/unpin` deletes that user's stored token pins and those tokens' DeviceId rows (not shared anon/IP glue). Host helpers: `make user-affinity`, `make user-unpin USERNAME=…`.
+`GET /hap/user-affinity` on the status bind returns the configured list. `POST /hap/users/by-name/{username}/unpin` deletes that user's stored token pins (by username or `/Users/Public` user id) and DeviceId pins on those backends (not shared anon/IP glue). Host helpers: `make user-affinity`, `make user-unpin USERNAME=…`.
 
 Postgres is the default affinity store. Compose sets `HAP_DATABASE_URL` to the `postgres` service (`postgres://hap:hap@postgres:5432/hap?sslmode=disable`). SQLite remains available (`affinity.store: sqlite` / `HAP_STORE=sqlite`) and opens with WAL, `busy_timeout=5000`, and a single writer connection. Switching drivers does not migrate bindings.
 

@@ -141,3 +141,44 @@ func TestUserAffinityAndUnpin(t *testing.T) {
 		t.Fatalf("empty username %d %s", rec3.Code, rec3.Body.String())
 	}
 }
+
+func TestUnpinResolvesPublicUserIDForWipedTokens(t *testing.T) {
+	pub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/Users/Public" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode([]map[string]string{{"Name": "ada", "Id": "u-ada"}})
+	}))
+	t.Cleanup(pub.Close)
+	cfg := &config.Config{
+		Affinity: config.Affinity{Policy: "fail_closed", NewClientsRequire: "healthy", Graylist: config.Graylist{Policy: "fail_closed"}},
+		Backends: []config.Backend{{Name: "server-a", URL: pub.URL, Timeout: time.Second}},
+	}
+	st, err := store.Open("sqlite", filepath.Join(t.TempDir(), "s.db"), time.Hour, time.Hour, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	ctx := context.Background()
+	if err := st.BindToken(ctx, "orphan", "server-a", store.TokenRow{DeviceID: "dev-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.BindDevice(ctx, "dev-1", "server-a", ""); err != nil {
+		t.Fatal(err)
+	}
+	mon, err := health.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mon.SetState("server-a", health.StateHealthy)
+	h := New(cfg, st, mon, router.New(cfg, st, mon), nil, nil, nil).Handler()
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/hap/users/by-name/ada/unpin", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"tokens":1`) {
+		t.Fatalf("unpin orphan %d %s", rec.Code, rec.Body.String())
+	}
+	if row, _ := st.LookupToken(ctx, "orphan"); row != nil {
+		t.Fatal("wiped token should be gone")
+	}
+}

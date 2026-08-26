@@ -67,7 +67,7 @@ type Store interface {
 	DeleteToken(ctx context.Context, token string) error
 	DeleteDevice(ctx context.Context, deviceID string) error
 	DeleteClient(ctx context.Context, token, deviceID string) error
-	DeletePinsByUsername(ctx context.Context, username string) (tokens, devices int, err error)
+	DeletePinsByUsername(ctx context.Context, username string, extraUserIDs ...string) (tokens, devices int, err error)
 	ListTokens(ctx context.Context) ([]TokenRow, error)
 	CountsByBackend(ctx context.Context) (map[string]Counts, error)
 	ListBackendFlags(ctx context.Context) (map[string]bool, error)
@@ -349,8 +349,12 @@ func (s *SQLStore) BindToken(ctx context.Context, token, backend string, meta To
 	}
 	q := `INSERT INTO token_bindings (token_hash, backend, user_id, username, device_id, client, device, version, session_id, created_at, last_seen, last_method, last_path, last_status)
 		VALUES (` + joinPH(s, 14) + `)
-		ON CONFLICT (token_hash) DO UPDATE SET backend=excluded.backend, user_id=excluded.user_id, username=excluded.username,
-		device_id=excluded.device_id, device=excluded.device, version=excluded.version, last_seen=excluded.last_seen,
+		ON CONFLICT (token_hash) DO UPDATE SET backend=excluded.backend, last_seen=excluded.last_seen,
+		user_id=CASE WHEN excluded.user_id IS NULL OR excluded.user_id = '' THEN token_bindings.user_id ELSE excluded.user_id END,
+		username=CASE WHEN excluded.username IS NULL OR excluded.username = '' THEN token_bindings.username ELSE excluded.username END,
+		device_id=CASE WHEN excluded.device_id IS NULL OR excluded.device_id = '' THEN token_bindings.device_id ELSE excluded.device_id END,
+		device=CASE WHEN excluded.device IS NULL OR excluded.device = '' THEN token_bindings.device ELSE excluded.device END,
+		version=CASE WHEN excluded.version IS NULL OR excluded.version = '' THEN token_bindings.version ELSE excluded.version END,
 		client=CASE WHEN excluded.client IS NULL OR excluded.client = '' THEN token_bindings.client ELSE excluded.client END`
 	_, err := s.db.ExecContext(ctx, q, h, backend, nullStr(meta.UserID), nullStr(meta.Username), nullStr(meta.DeviceID),
 		nullStr(meta.Client), nullStr(meta.Device), nullStr(meta.Version), meta.SessionID, now, now, nullStr(meta.LastMethod), nullStr(meta.LastPath), meta.LastStatus)
@@ -434,7 +438,7 @@ func (s *SQLStore) DeleteClient(ctx context.Context, token, deviceID string) err
 	return s.DeleteDevice(ctx, deviceID)
 }
 
-func (s *SQLStore) DeletePinsByUsername(ctx context.Context, username string) (tokens, devices int, err error) {
+func (s *SQLStore) DeletePinsByUsername(ctx context.Context, username string, extraUserIDs ...string) (tokens, devices int, err error) {
 	username = strings.TrimSpace(username)
 	if username == "" {
 		return 0, 0, nil
@@ -448,20 +452,20 @@ func (s *SQLStore) DeletePinsByUsername(ctx context.Context, username string) (t
 			_ = tx.Rollback()
 		}
 	}()
-	ph := s.placeholder(1)
-	rows, err := tx.QueryContext(ctx, `SELECT device_id FROM token_bindings WHERE LOWER(username)=LOWER(`+ph+`)`, username)
+	where, args := pinWhere(s, username, extraUserIDs)
+	rows, err := tx.QueryContext(ctx, `SELECT backend FROM token_bindings WHERE `+where, args...)
 	if err != nil {
 		return 0, 0, err
 	}
-	var deviceIDs []string
+	backends := map[string]struct{}{}
 	for rows.Next() {
-		var d sql.NullString
-		if err = rows.Scan(&d); err != nil {
+		var b sql.NullString
+		if err = rows.Scan(&b); err != nil {
 			rows.Close()
 			return 0, 0, err
 		}
-		if d.String != "" {
-			deviceIDs = append(deviceIDs, d.String)
+		if b.String != "" {
+			backends[b.String] = struct{}{}
 		}
 	}
 	if err = rows.Err(); err != nil {
@@ -469,15 +473,42 @@ func (s *SQLStore) DeletePinsByUsername(ctx context.Context, username string) (t
 		return 0, 0, err
 	}
 	rows.Close()
-	res, err := tx.ExecContext(ctx, `DELETE FROM token_bindings WHERE LOWER(username)=LOWER(`+ph+`)`, username)
+	if len(backends) == 0 {
+		where = `COALESCE(username,'')='' AND COALESCE(user_id,'')=''`
+		args = nil
+		rows, err = tx.QueryContext(ctx, `SELECT backend FROM token_bindings WHERE `+where)
+		if err != nil {
+			return 0, 0, err
+		}
+		for rows.Next() {
+			var b sql.NullString
+			if err = rows.Scan(&b); err != nil {
+				rows.Close()
+				return 0, 0, err
+			}
+			if b.String != "" {
+				backends[b.String] = struct{}{}
+			}
+		}
+		if err = rows.Err(); err != nil {
+			rows.Close()
+			return 0, 0, err
+		}
+		rows.Close()
+	}
+	if len(backends) == 0 {
+		err = tx.Commit()
+		return 0, 0, err
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM token_bindings WHERE `+where, args...)
 	if err != nil {
 		return 0, 0, err
 	}
 	if n, e := res.RowsAffected(); e == nil {
 		tokens = int(n)
 	}
-	for _, id := range deviceIDs {
-		res, err = tx.ExecContext(ctx, `DELETE FROM device_bindings WHERE device_id=`+ph, id)
+	for backend := range backends {
+		res, err = tx.ExecContext(ctx, `DELETE FROM device_bindings WHERE backend=`+s.placeholder(1), backend)
 		if err != nil {
 			return 0, 0, err
 		}
@@ -487,6 +518,31 @@ func (s *SQLStore) DeletePinsByUsername(ctx context.Context, username string) (t
 	}
 	err = tx.Commit()
 	return tokens, devices, err
+}
+
+func compactIDs(ids []string) []string {
+	var out []string
+	for _, id := range ids {
+		if id = strings.TrimSpace(id); id != "" {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+func pinWhere(s *SQLStore, username string, extraUserIDs []string) (string, []any) {
+	where := `LOWER(username)=LOWER(` + s.placeholder(1) + `)`
+	args := []any{username}
+	ids := compactIDs(extraUserIDs)
+	if len(ids) == 0 {
+		return where, args
+	}
+	ph := make([]string, len(ids))
+	for i, id := range ids {
+		ph[i] = s.placeholder(i + 2)
+		args = append(args, id)
+	}
+	return where + ` OR user_id IN (` + strings.Join(ph, ",") + `)`, args
 }
 
 func (s *SQLStore) ListTokens(ctx context.Context) ([]TokenRow, error) {

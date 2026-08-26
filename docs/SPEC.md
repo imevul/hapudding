@@ -30,7 +30,7 @@ Separate listener (default `127.0.0.1:9100`). Not an HTML page.
 | `POST /hap/backends/{name}/disable` | Runtime-park a backend (store overlay; status bind only) |
 | `POST /hap/backends/{name}/enable` | Clear runtime overlay (`409` if YAML `disabled: true`) |
 | `GET /hap/user-affinity` | Configured `- username: backend` login hints |
-| `POST /hap/users/by-name/{username}/unpin` | Delete stored token pins (and those tokens' DeviceId rows) for a username |
+| `POST /hap/users/by-name/{username}/unpin` | Delete stored token pins for a username (and DeviceId pins on those backends) |
 | `GET /metrics` | Prometheus |
 
 These paths 404 on the public Jellyfin listener.

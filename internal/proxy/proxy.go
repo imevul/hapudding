@@ -113,7 +113,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if id.Token != "" {
 		_ = h.st.BindToken(ctx, id.Token, d.Backend.Name, store.TokenRow{
-			DeviceID: id.DeviceID, Client: id.Client, Device: id.Device, Version: id.Version,
+			UserID: pathUserID(r.URL.Path), DeviceID: id.DeviceID, Client: id.Client, Device: id.Device, Version: id.Version,
 		})
 		_ = h.st.BindAnon(ctx, store.HashSessionIP(clientIP(r)), d.Backend.Name)
 	}
@@ -201,7 +201,7 @@ func (h *Handler) loginHop(r *http.Request, body []byte, b *config.Backend, gray
 		return nil, err
 	}
 	req.Header = r.Header.Clone()
-	req.Header.Del("Expect")
+	sanitizeLoginHopHeaders(req, len(body))
 	if b.Host != "" {
 		req.Host = b.Host
 	} else if pu, err := url.Parse(b.URL); err == nil {
@@ -225,6 +225,24 @@ func (h *Handler) loginHop(r *http.Request, body []byte, b *config.Backend, gray
 		req.Header.Set("Connection", "close")
 	}
 	return c.Do(req)
+}
+
+var loginHopHeaders = []string{
+	"Connection", "Keep-Alive", "Proxy-Authenticate", "Proxy-Authorization",
+	"Proxy-Connection", "Te", "Trailer", "Transfer-Encoding", "Upgrade",
+}
+
+func sanitizeLoginHopHeaders(req *http.Request, bodyLen int) {
+	if req == nil {
+		return
+	}
+	req.Header.Del("Expect")
+	for _, h := range loginHopHeaders {
+		req.Header.Del(h)
+	}
+	req.TransferEncoding = nil
+	req.ContentLength = int64(bodyLen)
+	req.Header.Set("Content-Length", strconv.Itoa(bodyLen))
 }
 
 func copyResponse(w http.ResponseWriter, res *http.Response) {
@@ -560,7 +578,7 @@ func acceptExpectContinue(r *http.Request) error {
 
 func (h *Handler) loginPreferred(d router.Decision, body []byte) string {
 	preferred := nameOf(d.Backend)
-	if d.Kind == store.KindToken || d.Kind == store.KindDevice {
+	if d.Kind == store.KindToken {
 		return preferred
 	}
 	if h.cfg == nil {
@@ -570,6 +588,43 @@ func (h *Handler) loginPreferred(d router.Decision, body []byte) string {
 		return want
 	}
 	return preferred
+}
+
+func pathUserID(path string) string {
+	p := path
+	const prefix = "/users/"
+	if !strings.HasPrefix(strings.ToLower(p), prefix) {
+		return ""
+	}
+	rest := p[len(prefix):]
+	if i := strings.IndexByte(rest, '/'); i >= 0 {
+		rest = rest[:i]
+	}
+	if !isGUID(rest) {
+		return ""
+	}
+	return rest
+}
+
+func isGUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch i {
+		case 8, 13, 18, 23:
+			if c != '-' {
+				return false
+			}
+		default:
+			hex := c >= '0' && c <= '9' || c >= 'A' && c <= 'F' || c >= 'a' && c <= 'f'
+			if !hex {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func loginUsername(body []byte) string {
