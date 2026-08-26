@@ -18,6 +18,7 @@ Instructions for coding agents working in this repository.
 - Gray-list is header/path/store client class (default Infuse), not a Jellyfin user identity.
 - Do not put personal, secret, or deployment-specific information in the repo.
 - Runtime secrets live in gitignored `.env` and `data/`.
+- Committed files (docs, examples, tests, comments, Make help) must use only generic backend names (`server-a`, `server-b`) and fictional URLs (`127.0.0.1`, `example.test`). Never commit real operator hostnames, site names, or other deployment identifiers.
 
 ## Layout
 

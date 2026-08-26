@@ -22,6 +22,8 @@ Official iOS/tvOS. Persists Server Id. Same `force_reauth` warning. Prefer `Auth
 
 ## Jellyfin Web
 
+`GET /web` is proxied like any other path. HAP does not yet preserve the public origin: hop `Host` is the backend URL host and `Location` is not rewritten, so a browser often 302s to `https://<backend>/web/…` and leaves HAP (image/library cache no longer apply). Native API clients are unaffected. See roadmap **P2-11**.
+
 WebSocket is often `/socket?api_key=…&deviceId=…` — token only on the query string. HAP parses `ApiKey` / `api_key` and `deviceId` / `device_id`.
 
 `<img>` and some stream URLs send no `Authorization`. HAP sets `hap_backend` on proxied responses and keeps those paths on a live session (cookie if that backend has a token/DeviceId, else IP glue from login). Token still wins when `api_key` is present.

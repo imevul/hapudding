@@ -47,6 +47,23 @@
 | P2-8 | Optional per-backend in-memory image cache (off by default) | [X] |
 | P2-9 | `performance` block: image cache on by default, library JSON cache, coalesce, auth_timeout; optional warm login + library concurrency | [X] |
 | P2-10 | Disk-backed image cache (memory hot LRU + optional disk, Compose `hap-cache` volume) | [X] |
+| P2-11 | Keep Jellyfin Web on HAP’s origin (no bounce to `backends[].url`) | [ ] |
+| P2-12 | Investigate: My Media → Movies / TV shows fail through HAP after home-screen section changes | [ ] |
+
+`P2-11` — today `GET /web` hops with `Host` = upstream host and does not rewrite `Location`, so a public HTTPS backend 302s the browser off HAP (`#/home` is the SPA after that). Goal: affinity-chosen server’s player stays on the HAP host; XHR, images, streams, `/socket` stay on HAP (caches apply). Not a merged library; no ID rewrite.
+
+- Forward `X-Forwarded-Host` / proto / port for the host the user typed; do not let “HTTPS required” 301 to the backend name.
+- Rewrite `Location` / `Content-Location` to the inbound origin (`ReverseProxy` `Rewrite`+`SetURL`, or equivalent — custom `Director`+`ModifyResponse` does not).
+- Hop shape: prefer internal `url` + `Host` = HAP name; if `url` stays the public vanity host, rewrite every absolute 3xx (ingress will keep speaking as that backend).
+- Optional: rewrite `/System/Info/Public` `LocalAddress` / WAN fields if Web still bounces (URLs only).
+- Watch HLS/DASH absolute segment URLs (bypass HAP). HAP-on-HTTP vs Jellyfin HTTPS-required. Same-backend pin for `/web` assets vs API if versions differ.
+- Docs: Jellyfin known-proxies / published URI when HAP is the web entry; `clients.md` Web note.
+
+`P2-12` — reported after changing which home sections are visible. Do not assume a 5xx: local Compose logs (2026-08-26) served `/Users/…/Items` as **200**, but `/Users/…/Views` hops were **5–39s** and two died `backend unreachable` / `context canceled` (client abort). Immediate retry then hit the **library cache**.
+
+- Suspects: stale **Views / Latest / Resume / NextUp** (TTL 60s) after a home-layout write — `DisplayPreferences` is **not** an invalidate trigger (and no POST of it appeared on HAP; settings may have been saved on the backend origin, see P2-11). Coalesce only merges identical method+path+query; differing Views queries all hop. Image burst at the same time as canceled Views.
+- Check: log `RawQuery` on Views/Items; whether Movies/TV `ParentId` listings 200-but-empty vs client spinner; `library_concurrency` (off in local YAML) vs parallel library hops; 404s on a couple of item Primary images.
+- Compare the same navigation on the backend directly vs HAP; disable `performance.library` / `coalesce` as a bisect.
 
 ## P3 - Health
 

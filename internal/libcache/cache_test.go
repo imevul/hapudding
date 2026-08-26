@@ -9,9 +9,9 @@ import (
 )
 
 func TestKeySeparatedByTokenAndBackend(t *testing.T) {
-	a := Key("server-b", "tok1", http.MethodGet, "/Users/u/Views", "")
-	b := Key("server-b", "tok2", http.MethodGet, "/Users/u/Views", "")
-	c := Key("server-a", "tok1", http.MethodGet, "/Users/u/Views", "")
+	a := Key("server-a", "tok1", http.MethodGet, "/Users/u/Views", "")
+	b := Key("server-a", "tok2", http.MethodGet, "/Users/u/Views", "")
+	c := Key("server-b", "tok1", http.MethodGet, "/Users/u/Views", "")
 	if a == b || a == c {
 		t.Fatal("keys must include token and backend")
 	}
@@ -19,21 +19,21 @@ func TestKeySeparatedByTokenAndBackend(t *testing.T) {
 
 func TestHitMissAndDropToken(t *testing.T) {
 	c := New(config.LibraryCache{TTL: time.Hour, MaxBytes: 1 << 20, MaxObject: 1 << 20})
-	key := Key("server-b", "hash", http.MethodGet, "/Users/u/Views", "")
+	key := Key("server-a", "hash", http.MethodGet, "/Users/u/Views", "")
 	if c.Get(key) != nil {
 		t.Fatal("empty get")
 	}
-	if !c.Put(key, &Entry{Backend: "server-b", Status: 200, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: []byte(`{"ok":1}`)}) {
+	if !c.Put(key, &Entry{Backend: "server-a", Status: 200, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: []byte(`{"ok":1}`)}) {
 		t.Fatal("put")
 	}
 	if got := c.Get(key); got == nil || string(got.Body) != `{"ok":1}` {
 		t.Fatalf("hit %+v", got)
 	}
-	other := Key("server-b", "other", http.MethodGet, "/Users/u/Views", "")
+	other := Key("server-a", "other", http.MethodGet, "/Users/u/Views", "")
 	if c.Get(other) != nil {
 		t.Fatal("other token")
 	}
-	c.DropToken("server-b", "hash")
+	c.DropToken("server-a", "hash")
 	if c.Get(key) != nil {
 		t.Fatal("dropped")
 	}

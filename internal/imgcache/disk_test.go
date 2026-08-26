@@ -24,9 +24,9 @@ func diskCfg(dir string, diskMax int64) config.Cache {
 
 func TestDiskSurvivesNew(t *testing.T) {
 	dir := t.TempDir()
-	key := Key("server-b", "/Items/1/Images/Primary", "tag=a", "image/webp")
+	key := Key("server-a", "/Items/1/Images/Primary", "tag=a", "image/webp")
 	c1 := New(diskCfg(dir, 1<<20))
-	if !c1.Put(key, &Entry{Backend: "server-b", Status: 200, Header: map[string][]string{"Content-Type": {"image/png"}}, Body: []byte("png-bytes"), ExpiresAt: time.Now().Add(time.Hour)}) {
+	if !c1.Put(key, &Entry{Backend: "server-a", Status: 200, Header: map[string][]string{"Content-Type": {"image/png"}}, Body: []byte("png-bytes"), ExpiresAt: time.Now().Add(time.Hour)}) {
 		t.Fatal("put")
 	}
 	c2 := New(diskCfg(dir, 1<<20))
@@ -42,9 +42,9 @@ func TestDiskSurvivesNew(t *testing.T) {
 
 func TestDiskExpiredIsMiss(t *testing.T) {
 	dir := t.TempDir()
-	key := Key("server-b", "/Items/1/Images/Primary", "", "")
+	key := Key("server-a", "/Items/1/Images/Primary", "", "")
 	c := New(diskCfg(dir, 1<<20))
-	if !c.Put(key, &Entry{Backend: "server-b", Body: []byte("old"), ExpiresAt: time.Now().Add(8 * time.Millisecond)}) {
+	if !c.Put(key, &Entry{Backend: "server-a", Body: []byte("old"), ExpiresAt: time.Now().Add(8 * time.Millisecond)}) {
 		t.Fatal("put")
 	}
 	time.Sleep(20 * time.Millisecond)
