@@ -23,6 +23,29 @@ type Config struct {
 	Affinity    Affinity    `yaml:"affinity"`
 	Health      Health      `yaml:"health"`
 	Performance Performance `yaml:"performance"`
+	Web         Web         `yaml:"web"`
+	Translate   Translate   `yaml:"translate"`
+}
+
+// Web is optional Jellyfin Web hop behavior (default off).
+type Web struct {
+	StayOnOrigin StayOnOrigin `yaml:"stay_on_origin"`
+}
+
+type StayOnOrigin struct {
+	Enabled          *bool `yaml:"enabled"`
+	RewritePlaylists *bool `yaml:"rewrite_playlists"`
+}
+
+// Translate is optional identity presentation (default off).
+type Translate struct {
+	ServerID TranslateServerID `yaml:"server_id"`
+}
+
+type TranslateServerID struct {
+	Enabled *bool  `yaml:"enabled"`
+	ID      string `yaml:"id"`
+	Name    string `yaml:"name"`
 }
 
 type Performance struct {
@@ -362,6 +385,14 @@ func applyEnv(c *Config) {
 			c.Performance.AuthTimeout = d
 		}
 	}
+	if v := os.Getenv("HAP_STAY_ON_ORIGIN"); v != "" {
+		t := envBool(v)
+		c.Web.StayOnOrigin.Enabled = &t
+	}
+	if v := os.Getenv("HAP_TRANSLATE_SERVER_ID"); v != "" {
+		t := envBool(v)
+		c.Translate.ServerID.Enabled = &t
+	}
 	for i := range c.Backends {
 		prefix := "HAP_BACKEND_" + envName(c.Backends[i].Name) + "_HEADER_"
 		for _, e := range os.Environ() {
@@ -451,6 +482,14 @@ func validate(c *Config) error {
 	if c.Performance.LibraryConcurrencyEnabled() && c.Performance.LibraryConcurrency.Max < 1 {
 		return fmt.Errorf("performance.library_concurrency.max must be >= 1 when enabled")
 	}
+	if c.TranslateServerIDEnabled() {
+		id := strings.TrimSpace(c.Translate.ServerID.ID)
+		if !isGUID(id) {
+			return fmt.Errorf("translate.server_id.id must be a UUID when translate.server_id is enabled")
+		}
+		c.Translate.ServerID.ID = id
+		c.Translate.ServerID.Name = strings.TrimSpace(c.Translate.ServerID.Name)
+	}
 	seenUsers := map[string]struct{}{}
 	for _, e := range c.Affinity.UserAffinityEntries() {
 		if e.Username == "" || e.Backend == "" {
@@ -488,6 +527,52 @@ func validate(c *Config) error {
 		}
 	}
 	return nil
+}
+
+func (c *Config) StayOnOriginEnabled() bool {
+	return c != nil && c.Web.StayOnOrigin.Enabled != nil && *c.Web.StayOnOrigin.Enabled
+}
+
+func (c *Config) RewritePlaylistsEnabled() bool {
+	if !c.StayOnOriginEnabled() {
+		return false
+	}
+	if c.Web.StayOnOrigin.RewritePlaylists == nil {
+		return true
+	}
+	return *c.Web.StayOnOrigin.RewritePlaylists
+}
+
+func (c *Config) TranslateServerIDEnabled() bool {
+	return c != nil && c.Translate.ServerID.Enabled != nil && *c.Translate.ServerID.Enabled
+}
+
+func (c *Config) TranslateServerName() string {
+	if !c.TranslateServerIDEnabled() {
+		return ""
+	}
+	return strings.TrimSpace(c.Translate.ServerID.Name)
+}
+
+func isGUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch i {
+		case 8, 13, 18, 23:
+			if c != '-' {
+				return false
+			}
+		default:
+			hex := c >= '0' && c <= '9' || c >= 'A' && c <= 'F' || c >= 'a' && c <= 'f'
+			if !hex {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func (p Performance) CacheEnabled() bool {

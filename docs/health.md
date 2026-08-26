@@ -3,7 +3,7 @@
 Layers, checked on `health.interval` (default 10s). Probes use the same hop TLS/headers as proxied traffic.
 
 1. **Reachability** — HTTP connect to the instance
-2. **Public liveness** — `GET /System/Info/Public` (caches reported Id/name/version; never rewritten on the client path)
+2. **Public liveness** — `GET /System/Info/Public` (caches the **native** backend Id/name/version for probes; the client hop may present a configured Server ID or rewritten Public URL fields when those opt-in toggles are on)
 3. **Jellyfin `/health`** — HTTP + database connectivity
 4. **Auth-plane** — passive: N recent 5xx on login/user endpoints in a window → **degraded**. Optional active `AuthenticateByName` probe (off by default)
 

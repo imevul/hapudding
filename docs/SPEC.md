@@ -4,7 +4,7 @@ HAP (Highly Available Pudding) is a Jellyfin-aware reverse proxy for **one or mo
 
 ## Constraints
 
-- Server IDs, user IDs, item IDs, and tokens are backend-local. HAP does not rewrite them.
+- Server IDs, user IDs, item IDs, and tokens are backend-local. HAP does not rewrite them unless `translate.server_id` is enabled, and then only the top-level `Id` on `GET /System/Info` and `GET /System/Info/Public` (optional `name` may also replace `ServerName`).
 - Never request-level round-robin an authenticated client.
 - Token affinity wins; DeviceId is fallback; header-less media may follow a live session (cookie if that backend has a token/DeviceId, else IP-only glue); short-lived IP+User-Agent glue last. Unauthenticated login may retry other eligible backends on hop timeout or 401. Config `user_affinity` may prefer a backend on first password login; it does not override token/device pins or eligibility.
 - Cookie `hap_backend` is a hint only, never the sole affinity source. HAP sets it on proxied responses. Image/stream requests may use it only when that backend already has a live token or DeviceId binding.
@@ -37,7 +37,7 @@ These paths 404 on the public Jellyfin listener.
 
 ## Non-goals (v1)
 
-- ID translation or forcing matching Jellyfin database IDs
+- User/item ID translation or forcing matching Jellyfin database IDs (optional Server ID presentation on `/System/Info*` is listed above; it is not a merged library)
 - Multi-HAP process cluster (expected later; Postgres is the default store)
 - HTML admin UI
 - Replacing the operator's ingress

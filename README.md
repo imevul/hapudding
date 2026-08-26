@@ -2,7 +2,7 @@
 
 Jellyfin-aware reverse proxy for a pool of **one or more** independent Jellyfin instances.
 
-Each Jellyfin is its own database. Server IDs, user IDs, item IDs, and auth tokens are backend-local. HAP routes with **token and DeviceId affinity**. It does not rewrite IDs or pretend two servers are one.
+Each Jellyfin is its own database. Server IDs, user IDs, item IDs, and auth tokens are backend-local. HAP routes with **token and DeviceId affinity**. It does not rewrite IDs unless `translate.server_id` is enabled, and then only `/System/Info*` `Id` (optional `name` may also replace `ServerName`). It does not pretend two servers are one.
 
 Point your existing ingress at **one HAP target**, not at the Jellyfin servers directly.
 

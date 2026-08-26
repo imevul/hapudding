@@ -21,6 +21,215 @@ import (
 	"github.com/imevul/hapudding/internal/store"
 )
 
+func TestStayOnOriginOffLeavesLocation(t *testing.T) {
+	var gotHost, gotXFH string
+	a := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHost = r.Host
+		gotXFH = r.Header.Get("X-Forwarded-Host")
+		w.Header().Set("Location", "https://server-a.example.test/web/")
+		w.WriteHeader(http.StatusFound)
+	}))
+	t.Cleanup(a.Close)
+	h, _, mon := testProxy(t, "fail_closed", a)
+	mon.SetState("server-a", health.StateHealthy)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://hap.example.test/web/", nil)
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status %d", rec.Code)
+	}
+	if rec.Header().Get("Location") != "https://server-a.example.test/web/" {
+		t.Fatalf("off must leave Location, got %q", rec.Header().Get("Location"))
+	}
+	if gotXFH != "" {
+		t.Fatalf("off must not set X-Forwarded-Host, got %q", gotXFH)
+	}
+	if gotHost == "hap.example.test" {
+		t.Fatal("off hop Host must stay the backend URL host")
+	}
+}
+
+func TestStayOnOriginRewritesRedirectAndForwardedHost(t *testing.T) {
+	var gotHost, gotXFH, gotXFP string
+	a := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHost = r.Host
+		gotXFH = r.Header.Get("X-Forwarded-Host")
+		gotXFP = r.Header.Get("X-Forwarded-Proto")
+		w.Header().Set("Location", "https://server-a.example.test/web/")
+		w.Header().Set("Content-Location", "https://server-a.example.test/web/index.html")
+		w.WriteHeader(http.StatusFound)
+	}))
+	t.Cleanup(a.Close)
+	h, _, mon := testProxy(t, "fail_closed", a)
+	h.cfg.Web.StayOnOrigin.Enabled = boolPtr(true)
+	mon.SetState("server-a", health.StateHealthy)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://hap.example.test/web/", nil)
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status %d", rec.Code)
+	}
+	if rec.Header().Get("Location") != "http://hap.example.test/web/" {
+		t.Fatalf("Location=%q", rec.Header().Get("Location"))
+	}
+	if rec.Header().Get("Content-Location") != "http://hap.example.test/web/index.html" {
+		t.Fatalf("Content-Location=%q", rec.Header().Get("Content-Location"))
+	}
+	if gotXFH != "hap.example.test" || gotHost != "hap.example.test" {
+		t.Fatalf("hop Host=%q X-Forwarded-Host=%q", gotHost, gotXFH)
+	}
+	if gotXFP != "http" {
+		t.Fatalf("X-Forwarded-Proto=%q", gotXFP)
+	}
+}
+
+func TestStayOnOriginRewritesPublicURLsNotItemIDs(t *testing.T) {
+	a := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(strings.ToLower(r.URL.Path), "/system/info/public"):
+			_, _ = w.Write([]byte(`{"Id":"SERVER-A-ID","LocalAddress":"https://server-a.example.test:8096","WanAddress":"https://server-a.example.test"}`))
+		case strings.Contains(r.URL.Path, "/Items"):
+			_, _ = w.Write([]byte(`{"Items":[{"Id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","Name":"Show"}]}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(a.Close)
+	h, _, mon := testProxy(t, "fail_closed", a)
+	h.cfg.Web.StayOnOrigin.Enabled = boolPtr(true)
+	mon.SetState("server-a", health.StateHealthy)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://hap.example.test/System/Info/Public", nil)
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("public %d %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"Id":"SERVER-A-ID"`) {
+		t.Fatalf("stay-on-origin must not rewrite Id: %s", body)
+	}
+	if !strings.Contains(body, `"LocalAddress":"http://hap.example.test:8096"`) && !strings.Contains(body, `"LocalAddress":"http://hap.example.test`) {
+		t.Fatalf("LocalAddress not rewritten: %s", body)
+	}
+	if strings.Contains(body, "server-a.example.test") {
+		t.Fatalf("backend URL left in public info: %s", body)
+	}
+
+	rec2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodGet, "http://hap.example.test/Users/u-a/Items", nil)
+	req2.Header.Set("Authorization", `MediaBrowser Token="t", DeviceId="d"`)
+	h.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("items %d %s", rec2.Code, rec2.Body.String())
+	}
+	if !strings.Contains(rec2.Body.String(), `"Id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"`) {
+		t.Fatalf("item Id rewritten: %s", rec2.Body.String())
+	}
+}
+
+func TestStayOnOriginLoginSetsForwardedHost(t *testing.T) {
+	var gotXFH, gotHost string
+	a := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHost = r.Host
+		gotXFH = r.Header.Get("X-Forwarded-Host")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"AccessToken": "issued-token",
+			"User":        map[string]string{"Id": "u-a", "Name": "ada"},
+		})
+	}))
+	t.Cleanup(a.Close)
+	h, _, mon := testProxy(t, "fail_closed", a)
+	h.cfg.Web.StayOnOrigin.Enabled = boolPtr(true)
+	mon.SetState("server-a", health.StateHealthy)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "http://hap.example.test/Users/AuthenticateByName", strings.NewReader(`{"Username":"ada","Pw":"x"}`))
+	req.Header.Set("Authorization", `MediaBrowser Client="Delfin", DeviceId="dev-1"`)
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d %s", rec.Code, rec.Body.String())
+	}
+	if gotXFH != "hap.example.test" || gotHost != "hap.example.test" {
+		t.Fatalf("login hop Host=%q X-Forwarded-Host=%q", gotHost, gotXFH)
+	}
+}
+
+func TestStayOnOriginRewritesPlaylistAbsURLs(t *testing.T) {
+	a := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+		_, _ = w.Write([]byte("#EXTM3U\nhttps://server-a.example.test/Videos/x/segment.ts\nsegment.ts\n"))
+	}))
+	t.Cleanup(a.Close)
+	h, _, mon := testProxy(t, "fail_closed", a)
+	h.cfg.Web.StayOnOrigin.Enabled = boolPtr(true)
+	mon.SetState("server-a", health.StateHealthy)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://hap.example.test/Videos/x/master.m3u8", nil)
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "http://hap.example.test/Videos/x/segment.ts") {
+		t.Fatalf("absolute playlist URL not rewritten: %s", body)
+	}
+	if !strings.Contains(body, "\nsegment.ts\n") {
+		t.Fatalf("relative playlist URI rewritten: %s", body)
+	}
+}
+
+func TestTranslateServerIDPublicOnly(t *testing.T) {
+	const hapID = "11111111-2222-3333-4444-555555555555"
+	a := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(strings.ToLower(r.URL.Path), "/system/info/public") || strings.HasSuffix(strings.ToLower(r.URL.Path), "/system/info"):
+			_, _ = w.Write([]byte(`{"Id":"SERVER-A-ID","ServerName":"A"}`))
+		case strings.Contains(r.URL.Path, "/Items"):
+			_, _ = w.Write([]byte(`{"Items":[{"Id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}]}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(a.Close)
+	h, _, mon := testProxy(t, "fail_closed", a)
+	h.cfg.Translate.ServerID.Enabled = boolPtr(true)
+	h.cfg.Translate.ServerID.ID = hapID
+	mon.SetState("server-a", health.StateHealthy)
+
+	for _, path := range []string{"/System/Info/Public", "/System/Info"} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s %d %s", path, rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), `"Id":"`+hapID+`"`) {
+			t.Fatalf("%s Id not translated: %s", path, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), `"ServerName":"A"`) {
+			t.Fatalf("%s empty name must leave ServerName: %s", path, rec.Body.String())
+		}
+	}
+
+	h.cfg.Translate.ServerID.Name = "HAP"
+	recName := httptest.NewRecorder()
+	reqName := httptest.NewRequest(http.MethodGet, "/System/Info/Public", nil)
+	h.ServeHTTP(recName, reqName)
+	if !strings.Contains(recName.Body.String(), `"ServerName":"HAP"`) {
+		t.Fatalf("ServerName not overridden: %s", recName.Body.String())
+	}
+
+	rec2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodGet, "/Users/u-a/Items", nil)
+	req2.Header.Set("Authorization", `MediaBrowser Token="t", DeviceId="d"`)
+	h.ServeHTTP(rec2, req2)
+	if !strings.Contains(rec2.Body.String(), `"Id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"`) {
+		t.Fatalf("item Id rewritten: %s", rec2.Body.String())
+	}
+}
+
 func TestPublicInfoIDPassedThrough(t *testing.T) {
 	a := backend(t, "SERVER-A-ID", http.StatusOK, "")
 	h, _, mon := testProxy(t, "fail_closed", a)

@@ -85,6 +85,22 @@ All optional proxy mitigations live under `performance`. Toggles that default on
 
 Top-level `cache:` is ignored (moved under `performance`).
 
+## Web origin and Server ID (opt-in)
+
+Both default **off**. A hand-built `Config` that never calls `Load()` stays off. They compose but do not require each other.
+
+| Key | Env | Default | Notes |
+| --- | --- | --- | --- |
+| `web.stay_on_origin.enabled` | `HAP_STAY_ON_ORIGIN` | `false` | P2-11: keep browsers on HAP’s public origin |
+| `web.stay_on_origin.rewrite_playlists` | | `true` when stay-on-origin is on | Rewrite absolute `http(s)` URLs in m3u8/mpd only |
+| `translate.server_id.enabled` | `HAP_TRANSLATE_SERVER_ID` | `false` | F-2a: present one Server ID on `GET /System/Info*` |
+| `translate.server_id.id` | | required UUID when enabled | Operator-chosen; HAP does not invent or persist one |
+| `translate.server_id.name` | | omitted | Optional display name; omit = keep backend `ServerName` |
+
+**Stay-on-origin** sets `X-Forwarded-Host` / proto / port to the inbound origin (ingress headers if present, else the public `Host`), prefers hop `Host` = that origin when `backends[].host` is unset, and rewrites `Location` / `Content-Location`, Public-info URL fields, and (when enabled) playlist absolute URLs. Relative playlist URIs and A/V byte streams are left alone. Jellyfin **KnownProxies** / published server URI must include HAP or the ingress so the backend trusts `X-Forwarded-*`. See [clients.md](clients.md).
+
+**Server ID** replaces only the top-level `Id` on `GET /System/Info` and `GET /System/Info/Public`. Optional `name` also replaces top-level `ServerName` (and `Name` if present). User IDs, item IDs, tokens, paths, and login `AccessToken` are never rewritten. Health probes still cache the **native** backend Id and name. Presenting one Server ID for two databases can make Infuse Library Mode worse; default gray-list `fail_closed` remains the safe Infuse path.
+
 ## Health
 
 See [health.md](health.md). Interval default `10s`. Optional `auth_probe` is off by default.

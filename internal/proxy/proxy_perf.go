@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -275,29 +274,19 @@ func (h *Handler) hopOnce(r *http.Request, b *config.Backend, graylisted bool) (
 	}
 	req.Header = r.Header.Clone()
 	req.Header.Del("Expect")
-	if b.Host != "" {
-		req.Host = b.Host
-	} else if pu, err := url.Parse(b.URL); err == nil {
-		req.Host = pu.Host
-	}
-	if req.Header.Get("X-Forwarded-For") == "" {
-		if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-			req.Header.Set("X-Forwarded-For", host)
-		}
-	}
-	if req.Header.Get("X-Forwarded-Proto") == "" {
-		req.Header.Set("X-Forwarded-Proto", "http")
-		if r.TLS != nil {
-			req.Header.Set("X-Forwarded-Proto", "https")
-		}
-	}
+	applyForwardedOrigin(req, r, b, h.cfg != nil && h.cfg.StayOnOriginEnabled())
 	for k, v := range b.Headers {
 		req.Header.Set(k, v)
 	}
 	if graylisted {
 		req.Header.Set("Connection", "close")
 	}
-	return tr.RoundTrip(req)
+	res, err := tr.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+	h.rewriteProxiedResponse(res, r)
+	return res, nil
 }
 
 func (h *Handler) acquireLibrary(ctx context.Context, r *http.Request, backend string) error {

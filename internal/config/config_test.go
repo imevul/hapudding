@@ -215,6 +215,9 @@ backends:
 	if c.Performance.WarmLoginEnabled() || c.Performance.LibraryConcurrencyEnabled() {
 		t.Fatal("warm_login and library_concurrency must default off")
 	}
+	if c.StayOnOriginEnabled() || c.TranslateServerIDEnabled() {
+		t.Fatal("stay_on_origin and translate.server_id must default off")
+	}
 	if c.Performance.AuthTimeout != 60*time.Second {
 		t.Fatalf("auth_timeout=%s", c.Performance.AuthTimeout)
 	}
@@ -386,5 +389,129 @@ backends:
 	t.Setenv("HAP_BACKEND_SERVER_A_HEADER_AUTHORIZATION", "Bearer nope")
 	if _, err := Load(p2); err == nil {
 		t.Fatal("expected reserved header from env to be rejected")
+	}
+}
+
+func TestStayOnOriginAndTranslateServerID(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "hap.yaml")
+	if err := os.WriteFile(p, []byte(`
+backends:
+  - name: server-a
+    url: http://127.0.0.1:8096
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.StayOnOriginEnabled() || c.RewritePlaylistsEnabled() || c.TranslateServerIDEnabled() {
+		t.Fatal("toggles must stay off after Load")
+	}
+
+	t.Setenv("HAP_STAY_ON_ORIGIN", "true")
+	c, err = Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.StayOnOriginEnabled() || !c.RewritePlaylistsEnabled() {
+		t.Fatal("HAP_STAY_ON_ORIGIN should enable stay-on-origin and default playlist rewrite")
+	}
+
+	if err := os.WriteFile(p, []byte(`
+backends:
+  - name: server-a
+    url: http://127.0.0.1:8096
+web:
+  stay_on_origin:
+    enabled: true
+    rewrite_playlists: false
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HAP_STAY_ON_ORIGIN", "")
+	c, err = Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.StayOnOriginEnabled() || c.RewritePlaylistsEnabled() {
+		t.Fatal("explicit rewrite_playlists: false must stick")
+	}
+
+	if err := os.WriteFile(p, []byte(`
+backends:
+  - name: server-a
+    url: http://127.0.0.1:8096
+translate:
+  server_id:
+    enabled: true
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(p); err == nil {
+		t.Fatal("enabled translate.server_id without id must fail")
+	}
+
+	if err := os.WriteFile(p, []byte(`
+backends:
+  - name: server-a
+    url: http://127.0.0.1:8096
+translate:
+  server_id:
+    enabled: true
+    id: not-a-uuid
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(p); err == nil {
+		t.Fatal("invalid translate.server_id.id must fail")
+	}
+
+	if err := os.WriteFile(p, []byte(`
+backends:
+  - name: server-a
+    url: http://127.0.0.1:8096
+translate:
+  server_id:
+    enabled: true
+    id: 11111111-2222-3333-4444-555555555555
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err = Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.TranslateServerIDEnabled() || c.Translate.ServerID.ID != "11111111-2222-3333-4444-555555555555" {
+		t.Fatalf("translate %+v", c.Translate.ServerID)
+	}
+	if c.TranslateServerName() != "" {
+		t.Fatalf("name must be optional, got %q", c.TranslateServerName())
+	}
+
+	if err := os.WriteFile(p, []byte(`
+backends:
+  - name: server-a
+    url: http://127.0.0.1:8096
+translate:
+  server_id:
+    enabled: true
+    id: 11111111-2222-3333-4444-555555555555
+    name: "  HAP  "
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err = Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.TranslateServerName() != "HAP" {
+		t.Fatalf("name=%q", c.TranslateServerName())
+	}
+
+	hand := &Config{}
+	if hand.StayOnOriginEnabled() || hand.TranslateServerIDEnabled() {
+		t.Fatal("hand-built Config that never calls Load must stay off")
 	}
 }

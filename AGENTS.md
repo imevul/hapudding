@@ -13,7 +13,7 @@ Instructions for coding agents working in this repository.
 
 ## Boundaries
 
-- HAP is a reverse proxy. It does not rewrite Jellyfin Server/User/Item IDs.
+- HAP is a reverse proxy. It does not rewrite Jellyfin Server/User/Item IDs unless `translate.server_id` is enabled, and then only `/System/Info*` `Id` (optional `name` may also replace `ServerName`).
 - Do not send an authenticated token issued by backend A to backend B.
 - Gray-list is header/path/store client class (default Infuse), not a Jellyfin user identity.
 - Do not put personal, secret, or deployment-specific information in the repo.

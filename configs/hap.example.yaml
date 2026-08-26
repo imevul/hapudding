@@ -52,6 +52,21 @@ performance:
   library_concurrency:
     enabled: false
     max: 3
+# Keep Jellyfin Web on HAP’s public origin (P2-11). Off by default.
+# Jellyfin KnownProxies / published server URI must include HAP (or the ingress).
+# web:
+#   stay_on_origin:
+#     enabled: false
+#     rewrite_playlists: true
+# Present one Server ID on GET /System/Info* only (F-2a). Off by default.
+# Do not invent or persist an id — set a UUID in YAML. Optional name overrides
+# ServerName. One Server ID for two databases can make Infuse Library Mode
+# worse; keep gray-list fail_closed.
+# translate:
+#   server_id:
+#     enabled: false
+#     id: ""
+#     name: ""
 health:
   interval: 10s
   public_info: true

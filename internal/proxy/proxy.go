@@ -170,6 +170,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request, d router.Decisio
 		}
 		reqCount.WithLabelValues(b.Name, result).Inc()
 		h.log.Info("proxy", "backend", b.Name, "status", res.StatusCode, "path", r.URL.Path, "method", r.Method)
+		h.rewriteProxiedResponse(res, r)
 		copyResponse(w, res)
 		return
 	}
@@ -202,22 +203,7 @@ func (h *Handler) loginHop(r *http.Request, body []byte, b *config.Backend, gray
 	}
 	req.Header = r.Header.Clone()
 	sanitizeLoginHopHeaders(req, len(body))
-	if b.Host != "" {
-		req.Host = b.Host
-	} else if pu, err := url.Parse(b.URL); err == nil {
-		req.Host = pu.Host
-	}
-	if req.Header.Get("X-Forwarded-For") == "" {
-		if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-			req.Header.Set("X-Forwarded-For", host)
-		}
-	}
-	if req.Header.Get("X-Forwarded-Proto") == "" {
-		req.Header.Set("X-Forwarded-Proto", "http")
-		if r.TLS != nil {
-			req.Header.Set("X-Forwarded-Proto", "https")
-		}
-	}
+	applyForwardedOrigin(req, r, b, h.cfg != nil && h.cfg.StayOnOriginEnabled())
 	for k, v := range b.Headers {
 		req.Header.Set(k, v)
 	}
@@ -285,45 +271,46 @@ func (h *Handler) proxy(w http.ResponseWriter, r *http.Request, b *config.Backen
 	}
 	peek := isLoginPath(r.Method, r.URL.Path)
 	logout := isLogoutPath(r.Method, r.URL.Path)
+	stay := h.cfg != nil && h.cfg.StayOnOriginEnabled()
 
-	rp.Director = func(req *http.Request) {
-		req.URL.Scheme = target.Scheme
-		req.URL.Host = target.Host
-		req.URL.Path = singleJoiningSlash(strings.TrimRight(target.Path, "/"), req.URL.Path)
-		if target.RawQuery == "" || req.URL.RawQuery == "" {
-			req.URL.RawQuery = target.RawQuery + req.URL.RawQuery
-		} else {
-			req.URL.RawQuery = target.RawQuery + "&" + req.URL.RawQuery
-		}
-		if b.Host != "" {
-			req.Host = b.Host
-		} else {
-			req.Host = target.Host
-		}
-		if xf := req.Header.Get("X-Forwarded-For"); xf == "" {
-			if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-				req.Header.Set("X-Forwarded-For", host)
+	if stay {
+		rp.Director = nil
+		rp.Rewrite = func(pr *httputil.ProxyRequest) {
+			pr.SetURL(target)
+			applyForwardedOrigin(pr.Out, pr.In, b, true)
+			for k, v := range b.Headers {
+				pr.Out.Header.Set(k, v)
 			}
+			if graylisted {
+				pr.Out.Header.Set("Connection", "close")
+			}
+			pr.Out.Header.Del("Expect")
 		}
-		if req.Header.Get("X-Forwarded-Proto") == "" {
-			if r.TLS != nil {
-				req.Header.Set("X-Forwarded-Proto", "https")
+	} else {
+		rp.Director = func(req *http.Request) {
+			req.URL.Scheme = target.Scheme
+			req.URL.Host = target.Host
+			req.URL.Path = singleJoiningSlash(strings.TrimRight(target.Path, "/"), req.URL.Path)
+			if target.RawQuery == "" || req.URL.RawQuery == "" {
+				req.URL.RawQuery = target.RawQuery + req.URL.RawQuery
 			} else {
-				req.Header.Set("X-Forwarded-Proto", "http")
+				req.URL.RawQuery = target.RawQuery + "&" + req.URL.RawQuery
 			}
+			applyForwardedOrigin(req, r, b, false)
+			for k, v := range b.Headers {
+				req.Header.Set(k, v)
+			}
+			if graylisted {
+				req.Header.Set("Connection", "close")
+			}
+			req.Header.Del("Expect")
 		}
-		for k, v := range b.Headers {
-			req.Header.Set(k, v)
-		}
-		if graylisted {
-			req.Header.Set("Connection", "close")
-		}
-		req.Header.Del("Expect")
 	}
 	rp.ModifyResponse = func(res *http.Response) error {
 		if peek && res.StatusCode >= 200 && res.StatusCode < 300 {
 			h.peekLogin(res, b.Name, id, clientIP(r))
 		}
+		h.rewriteProxiedResponse(res, r)
 		h.maybeStoreImage(res, r, b.Name)
 		h.maybeStoreLibrary(res, r, b.Name, id)
 		h.maybeInvalidateLibrary(res, r, b.Name, id)
