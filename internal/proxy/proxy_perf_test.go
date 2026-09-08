@@ -165,6 +165,13 @@ func TestWarmLoginFillsLibraryCache(t *testing.T) {
 		}
 		if strings.HasSuffix(r.URL.Path, "/Views") {
 			views++
+			if r.Header.Get("X-Emby-Token") != "" || r.Header.Get("X-MediaBrowser-Token") != "" {
+				t.Error("warm login must not send legacy token headers")
+			}
+			auth := r.Header.Get("Authorization")
+			if !strings.Contains(auth, `Token="issued-token"`) || !strings.HasPrefix(auth, "MediaBrowser ") {
+				t.Errorf("warm login Authorization=%q", auth)
+			}
 		}
 		_, _ = w.Write([]byte(`{"Items":[]}`))
 	}))

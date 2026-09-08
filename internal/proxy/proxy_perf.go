@@ -336,7 +336,6 @@ func (h *Handler) warmOne(b *config.Backend, token, rawURL string, timeout time.
 	if err != nil {
 		return
 	}
-	req.Header.Set("X-Emby-Token", token)
 	req.Header.Set("Authorization", `MediaBrowser Token="`+token+`"`)
 	if b.Host != "" {
 		req.Host = b.Host
